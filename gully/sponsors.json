@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "tournament": "Galli Premier League — Sunday Session",
+  "rotateMs": 7000,
+  "sponsors": [
+    {
+      "id": "cutting-chai",
+      "name": "Munna's Cutting Chai",
+      "tagline": "Har over ke baad, ek cutting.",
+      "boundaryLine": "That one is served hot by Munna's Cutting Chai.",
+      "color": "#5b2c0d",
+      "accent": "#ffc978"
+    },
+    {
+      "id": "sharma-sports",
+      "name": "Sharma Sports House",
+      "tagline": "Tape ball, tennis ball, sab milega.",
+      "boundaryLine": "Straight out of the middle — Sharma Sports House approves.",
+      "color": "#0d3b5b",
+      "accent": "#7fd7ff"
+    },
+    {
+      "id": "balcony-glass",
+      "name": "Verma Glass & Glazing",
+      "tagline": "Broken window? Same-day fitting.",
+      "boundaryLine": "Another window at risk. Verma Glass & Glazing is on the way.",
+      "color": "#123f2e",
+      "accent": "#8ff0c0"
+    },
+    {
+      "id": "tiffin",
+      "name": "Didi's Tiffin Service",
+      "tagline": "Innings break lunch, 60 rupees.",
+      "boundaryLine": "Big hit! Didi's Tiffin Service says come hungry.",
+      "color": "#4a1240",
+      "accent": "#ffa8e6"
+    },
+    {
+      "id": "cycle-repair",
+      "name": "Guddu Cycle Repair",
+      "tagline": "Puncture ka permanent solution.",
+      "boundaryLine": "Miles away — Guddu Cycle Repair will fetch it.",
+      "color": "#3b3a10",
+      "accent": "#f0e58a"
+    }
+  ]
+}
