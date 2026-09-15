@@ -952,10 +952,17 @@ function shotLine(dirX, dirY, speed, u, remaining, win){
   const across = speed > 0.3 ? clamp(dirX / mag, -1, 1) : 0;
   const timing = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
   const blade  = clamp((u - 0.74) / 0.42, -1, 1);
-  const sense  = across >= 0 ? 1 : -1;
-  const angle  = clamp(across*SWING_GAIN + timing*TIMING_GAIN + blade*BLADE_GAIN*sense,
-                       -LINE_LIMIT, LINE_LIMIT);
-  return { angle, across, timing, blade };
+
+  // The swing picks the SIDE, timing and contact pick how far round it goes.
+  // Adding the two signed together meant they cancelled: swing to the off but
+  // meet it early and +0.85 - 1.05 came out near straight, which is how ten
+  // deliberate back shots produced two. Swinging across and playing it late are
+  // now both ways of getting finer on the side you chose, never opposites.
+  const side   = Math.abs(across) > 0.15 ? (across > 0 ? 1 : -1)
+                                         : (timing >= 0 ? 1 : -1);   // late is off, early is leg
+  const round  = Math.abs(across)*SWING_GAIN + Math.abs(timing)*TIMING_GAIN + blade*BLADE_GAIN;
+  const angle  = clamp(side * Math.max(round, 0), -LINE_LIMIT, LINE_LIMIT);
+  return { angle, across, timing, blade, side };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
