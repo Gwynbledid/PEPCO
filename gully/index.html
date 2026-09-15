@@ -260,7 +260,7 @@ const Diag = {
   camWant: '960x720, 60fps ideal / 24 min',
   camGot: '-', camMeasured: 0,
   delegate: '-', gpuNote: '',
-  camNote: '', batWhy: '',
+  camNote: '', batWhy: '', screen: 'windowed', view: '',
   inferErrors: 0, inferFirst: '',
   pose: false, wrists: false, visMin: 0, topHand: '-',
 };
@@ -336,6 +336,7 @@ function paintDiag(){
   rows.push('got  ' + esc(Diag.camGot) + '  measured ' +
             (isNaN(Diag.camMeasured) ? 'n/a' : Diag.camMeasured.toFixed(0) + 'fps'));
   rows.push('delegate ' + esc(Diag.delegate) + (Diag.gpuNote ? ' <span class="warn">(' + esc(Diag.gpuNote) + ')</span>' : ''));
+  rows.push('view ' + esc(Diag.view) + '  ' + esc(Diag.screen));
   rows.push('');
   rows.push.apply(rows, liveRows());
   rows.push('grip ' + Bat.grip.x.toFixed(2) + ',' + Bat.grip.y.toFixed(2));
@@ -524,13 +525,47 @@ puck.rotation.x = -Math.PI/2; puck.position.y = 0.04; puck.visible = false;
 scene.add(puck);
 
 function resize(){
+  // the stage is the element actually being painted; window.innerHeight lies
+  // while Android is animating its URL bar in and out
+  const stage = document.getElementById('stage');
+  const w = stage.clientWidth  || window.innerWidth;
+  const h = stage.clientHeight || window.innerHeight;
   const dpr = Math.min(window.devicePixelRatio||1, TIERS[G.tier].dpr);
   renderer.setPixelRatio(dpr);
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  camera.aspect = window.innerWidth / window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  Diag.view = w + 'x' + h + ' css';
 }
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', ()=> setTimeout(resize, 250));
+if(window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+// In landscape the browser chrome takes roughly a quarter of the screen, which
+// is the game's entire sky. Fullscreen needs a user gesture, so it rides on the
+// taps the player already makes. Neither call is required to play, so a refusal
+// is recorded rather than thrown — but never silently.
+async function goFullscreen(){
+  const bits = [];
+  try{
+    if(!document.fullscreenElement && document.documentElement.requestFullscreen){
+      await document.documentElement.requestFullscreen({ navigationUI:'hide' });
+      bits.push('fullscreen');
+    }else if(document.fullscreenElement){
+      bits.push('fullscreen');
+    }else{
+      bits.push('no fullscreen API');
+    }
+  }catch(err){ bits.push('fullscreen refused: ' + ((err && err.name) || err)); }
+  try{
+    if(screen.orientation && screen.orientation.lock){
+      await screen.orientation.lock('landscape');
+      bits.push('locked landscape');
+    }
+  }catch(err){ bits.push('no orientation lock'); }
+  Diag.screen = bits.join(', ');
+  setTimeout(resize, 300);
+}
 
 /* ════════════════════════════════════════════════════════════════
    POSE
@@ -1134,6 +1169,7 @@ $('startBtn').addEventListener('click', async ()=>{
   $('startBtn').disabled = true;
   $('startBtn').textContent = 'Starting…';
   clearFatal();
+  goFullscreen();
   try{
     await openCamera();
     show('p-calib');
@@ -1160,6 +1196,7 @@ $('startBtn').addEventListener('click', async ()=>{
 });
 
 $('playBtn').addEventListener('click', ()=>{
+  goFullscreen();
   hideAll(); hud(true);
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0;
