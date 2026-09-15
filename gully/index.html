@@ -731,6 +731,7 @@ const Bat = {
   ok:false, grip:{x:0,y:0}, tip:{x:0,y:0}, axis:{x:0,y:-1},
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
+  prevAng:null, axisSpin:0, follow:null,
 };
 
 function mapToWorld(nx, ny){
@@ -805,6 +806,15 @@ function updateBat(lm, now, dt){
     Bat.handSpeed = Math.max(hs, Bat.handSpeed * 0.82);
   }
   Bat.prevMid = { ...Bat.mid };
+
+  const angNow = Math.atan2(Bat.axis.x, -Bat.axis.y);
+  if(Bat.prevAng !== null && dt > 0){
+    let da = angNow - Bat.prevAng;
+    while(da >  Math.PI) da -= 2*Math.PI;      // the bat can cross the wrap
+    while(da < -Math.PI) da += 2*Math.PI;
+    Bat.axisSpin = Math.max(Math.abs(da/dt), Bat.axisSpin * 0.82);
+  }
+  Bat.prevAng = angNow;
   Bat.prevTip = { ...tip };
   Bat.tip = tip;
   Bat.ok = true;
@@ -910,6 +920,41 @@ function shotLine(dirX, dirY, speed, u, remaining, win){
   return { angle, across, timing, blade };
 }
 
+/* ── NAMING THE SHOT ───────────────────────────────────────────
+   From what a phone camera flat-on can actually see: where the ball went,
+   how hard, how high it was met, and how fast the bat was rotating. Front
+   foot versus back foot, and the wrist snap inside a helicopter, are not
+   visible from here, so they are not guessed at. */
+
+const FOLLOW = {
+  'Helicopter':     { spin:5.60, lift:0.34, sweep:0.10, dur:620 },
+  'Straight drive': { spin:0.55, lift:0.30, sweep:0.04, dur:430 },
+  'Lofted drive':   { spin:0.75, lift:0.40, sweep:0.06, dur:500 },
+  'Cover drive':    { spin:0.85, lift:0.26, sweep:0.18, dur:440 },
+  'On drive':       { spin:0.80, lift:0.24, sweep:0.16, dur:440 },
+  'Square drive':   { spin:1.15, lift:0.14, sweep:0.26, dur:440 },
+  'Square cut':     { spin:1.35, lift:0.10, sweep:0.30, dur:440 },
+  'Pull':           { spin:1.70, lift:0.16, sweep:0.34, dur:490 },
+  'Late cut':       { spin:1.05, lift:0.04, sweep:0.22, dur:400 },
+  'Glance':         { spin:0.45, lift:0.05, sweep:0.12, dur:360 },
+  'Flick':          { spin:0.70, lift:0.18, sweep:0.16, dur:410 },
+  'Defensive push': { spin:0.14, lift:0.04, sweep:0.03, dur:270 },
+};
+
+function classifyShot(line, speed, spin, loft){
+  if(speed < 1.2)                 return 'Defensive push';
+  if(spin > 5.0 && speed > 2.5)   return 'Helicopter';
+
+  const deg  = line.angle * 57.2958;
+  const a    = Math.abs(deg);
+  const off  = deg >= 0;                       // +x is the off side
+
+  if(a < 22)  return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
+  if(a < 60)  return off ? 'Cover drive' : (line.timing < -0.25 ? 'Flick' : 'On drive');
+  if(a < 95)  return off ? (line.timing > 0.3 ? 'Square cut' : 'Square drive') : 'Pull';
+  return off ? 'Late cut' : 'Glance';
+}
+
 function playShot(b, u, remaining){
   const t = TIERS[G.tier];
 
@@ -951,14 +996,19 @@ function playShot(b, u, remaining){
   else if(total >= 14)         { runs=1; label='1'; sub='Pushed into the gap'; }
   else                         { runs=0; label='Dot'; sub= sweet<0.3 ? 'Off the edge' : 'Straight to the fielder'; }
 
+  const shot = classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
+  const f = FOLLOW[shot];
+  Bat.follow = { t0: performance.now(), dur: f.dur, sign: hAngle >= 0 ? 1 : -1,
+                 spin: f.spin, lift: f.lift, sweep: f.sweep };
+
   G.runs += runs;
-  G.wagon.push({ a:hAngle, d:total, carry, runs, label });
+  G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
                   line.across.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
-  Diag.lastShot2 = 'spd ' + Bat.tipSpeed.toFixed(1) + '  pow ' + power.toFixed(2) +
-                   '  sweet ' + sweet.toFixed(2) + '  ' + label;
-  showCallout(label, sub, runs>=4 ? '#FFB020' : '#F2F6F4');
+  Diag.lastShot2 = shot + '  hand ' + Bat.handSpeed.toFixed(1) + '  spin ' +
+                   Bat.axisSpin.toFixed(1) + '  sweet ' + sweet.toFixed(2);
+  showCallout(label, shot + ' \u00b7 ' + sub, runs>=4 ? '#FFB020' : '#F2F6F4');
   endBall();
 }
 
@@ -1136,10 +1186,25 @@ function loop(now){
   if(now - Bat.lastSeen > 700) Bat.ok = false;
 
   // --- bat mesh ---
-  if(G.phase === 'live' && Bat.ok){
+  if(G.phase === 'live' && (Bat.ok || Bat.follow)){
     bat.visible = puck.visible = true;
     bat.position.set((Bat.grip.x+Bat.tip.x)/2, (Bat.grip.y+Bat.tip.y)/2, HIT_PLANE_Z);
     bat.rotation.z = Math.atan2(Bat.axis.x, -Bat.axis.y);
+
+    // The follow-through is layered on top of where your hands actually are and
+    // eases back to zero, so the bat is never taken away from you — it just
+    // carries on through the shot the way an arm does, then it is yours again.
+    const f = Bat.follow;
+    if(f){
+      const k = (now - f.t0) / f.dur;
+      if(k >= 1){ Bat.follow = null; }
+      else {
+        const e = Math.sin(Math.PI * k);          // 0 -> 1 -> 0
+        bat.rotation.z += f.spin  * f.sign * e;
+        bat.position.x += f.sweep * f.sign * e;
+        bat.position.y += f.lift  * e;
+      }
+    }
     puck.position.x = bat.position.x;
     puck.position.z = HIT_PLANE_Z;
   }else{
