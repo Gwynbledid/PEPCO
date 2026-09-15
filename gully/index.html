@@ -71,15 +71,17 @@
     .panel p{font-size:13px;max-width:34ch}
     #wagon{width:min(52vh,160px)}
     #wagonKey{font-size:12px;gap:5px}
+    #wagonLog{font-size:9px;line-height:1.4;max-height:min(34vh,130px);padding:6px 8px}
     button{padding:12px 24px;font-size:14px}
   }
   #wagonKey{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--dim);
     font-variant-numeric:tabular-nums}
   #wagonKey div{display:flex;gap:9px;align-items:center;white-space:nowrap}
   #wagonKey i{width:14px;height:3px;border-radius:2px;flex:none}
-  #wagonLog{font:11px/1.5 ui-monospace,Menlo,monospace;color:#8FE8BE;white-space:pre;
-    max-height:min(46vh,240px);overflow:auto;padding:8px 10px;border-radius:8px;
-    background:rgba(6,10,13,.6);box-shadow:inset 0 0 0 1px rgba(120,190,160,.22)}
+  #wagonLog{font:10.5px/1.45 ui-monospace,Menlo,monospace;color:#8FE8BE;white-space:pre;
+    align-self:stretch;max-height:min(40vh,220px);overflow:auto;padding:8px 10px;
+    border-radius:8px;background:rgba(6,10,13,.6);
+    box-shadow:inset 0 0 0 1px rgba(120,190,160,.22)}
   #wagonLog[hidden]{display:none}
 
   /* ---- calibration ---- */
@@ -193,9 +195,9 @@
       <div id="wagonWrap">
         <canvas id="wagon"></canvas>
         <div id="wagonKey"></div>
-        <div id="wagonLog" hidden></div>
       </div>
     </div>
+    <div id="wagonLog" hidden></div>
     <div class="row">
       <button id="againBtn">Bat again</button>
       <button id="setBtn2" class="ghost">Quality</button>
@@ -740,7 +742,7 @@ const Bat = {
   ok:false, grip:{x:0,y:0}, tip:{x:0,y:0}, axis:{x:0,y:-1},
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
-  prevAng:null, axisSpin:0, follow:null, aWasTop:null,
+  prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
 };
 
 function mapToWorld(nx, ny){
@@ -778,6 +780,7 @@ function updateBat(lm, now, dt){
   const aIsTop = Math.abs(sep) > 0.12 ? sep > 0
                : (Bat.aWasTop === null ? sep > 0 : Bat.aWasTop);
   Bat.aWasTop = aIsTop;
+  Bat.sep = sep;                         // vertical gap between the wrists, world units
   const top = aIsTop ? a : b;
   const bot = aIsTop ? b : a;
   Diag.topHand = aIsTop ? 'lm15 left wrist' : 'lm16 right wrist';
@@ -1039,7 +1042,9 @@ function playShot(b, u, remaining){
   G.runs += runs;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
                  across:line.across, timing:line.timing, blade:line.blade,
-                 hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining });
+                 hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
+                 axis:Math.atan2(Bat.axis.x, -Bat.axis.y)*57.2958,   // 0 = bat hanging down
+                 gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
                   line.across.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
@@ -1123,12 +1128,16 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  line  across  timing  blade  hand  spin  shot\n' +
+    log.textContent = 'ball  line across timing  axis  gripY ballY  sep  hand  spin  shot\n' +
       G.wagon.map((s, i) =>
         String(i+1).padStart(3) + ' ' +
         ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
-        f(s.across,5) + '  ' + f(s.timing,5) + '  ' + f(s.blade,5) + ' ' +
-        s.hand.toFixed(1).padStart(5) + ' ' + s.spin.toFixed(1).padStart(5) + '  ' + s.shot
+        f(s.across,5) + ' ' + f(s.timing,5) + ' ' +
+        ((s.axis >= 0 ? '+' : '') + s.axis.toFixed(0)).padStart(5) + ' ' +
+        s.gripY.toFixed(2).padStart(6) + s.ballY.toFixed(2).padStart(6) + ' ' +
+        f(s.sep,5) + ' ' + s.hand.toFixed(1).padStart(5) + ' ' +
+        s.spin.toFixed(1).padStart(5) + '  ' + s.shot +
+        (Math.abs(s.a*57.3) > 90 ? '  <BEHIND' : '')
       ).join('\n');
   }
 
