@@ -78,7 +78,7 @@
   @media (prefers-reduced-motion:reduce){#callout.show{animation-duration:.01s;opacity:1}}
 
   /* ── diagnostics: readable from two metres, never in the way of a tap ── */
-  #dbgPanel{position:absolute;left:0;top:0;max-width:min(460px,56vw);margin:8px;padding:10px 12px;
+  #dbgPanel{position:absolute;left:0;top:0;max-width:min(460px,64vw);margin:8px;padding:10px 12px;
     border-radius:10px;background:rgba(6,10,13,.86);box-shadow:inset 0 0 0 1px rgba(120,190,160,.28);
     font:700 clamp(13px,2.7vw,19px)/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
     color:#8FE8BE;white-space:pre-wrap;pointer-events:none;z-index:40;letter-spacing:.01em}
@@ -86,6 +86,11 @@
   #dbgPanel .bad{color:#FF7B72}
   #dbgPanel .wait{color:#C9D6CF;opacity:.65}
   #dbgPanel .warn{color:#FFC14D}
+  #dbgPanel.mini{max-width:min(420px,88vw);background:rgba(6,10,13,.62)}
+  #dbgToggle{position:absolute;right:10px;top:10px;z-index:50;pointer-events:auto;
+    min-width:60px;padding:11px 12px;border-radius:10px;border:0;
+    background:rgba(6,10,13,.78);color:#8FE8BE;box-shadow:inset 0 0 0 1px rgba(120,190,160,.3);
+    font:700 13px/1 ui-monospace,Menlo,monospace}
   #fatal{position:absolute;left:0;right:0;top:0;margin:0;padding:18px 20px;z-index:60;
     background:#5B1512;color:#FFE8E5;box-shadow:0 6px 24px rgba(0,0,0,.5);
     font:800 clamp(17px,4.2vw,28px)/1.35 -apple-system,Segoe UI,Roboto,sans-serif}
@@ -108,6 +113,7 @@
   <div id="callout"></div>
   <div id="diag" hidden></div>
   <div id="dbgPanel" hidden></div>
+  <button id="dbgToggle" hidden>dbg</button>
   <div id="fatal" hidden></div>
   <button id="settingsBtn" class="ghost" hidden>Quality</button>
 
@@ -242,7 +248,12 @@ const STEP_LABEL = {
   model:      'pose model',
   sponsors:   'sponsors.json',
 };
+const STEP_SHORT = { permission:'perm', camera:'cam', wasm:'wasm', model:'model', sponsors:'sponsors' };
 const STEP_ORDER = ['permission','camera','wasm','model','sponsors'];
+
+// full while anything is pending or broken, mini once it is all green,
+// because the panel is standing in front of the game the player came for
+let dbgMode = 'full';
 
 const Diag = {
   state: { permission:['wait',''], camera:['wait',''], wasm:['wait',''], model:['wait',''], sponsors:['wait',''] },
@@ -279,34 +290,54 @@ function fatal(err){
 
 function clearFatal(){ document.getElementById('fatal').hidden = true; }
 
+function anyStepBad(){
+  return STEP_ORDER.some(k => Diag.state[k][0] === 'bad');
+}
+
+function liveRows(){
+  const rows = [];
+  rows.push('pose ' + (Diag.pose ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
+            '  wrists ' + (Diag.wrists ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
+            ' ' + Diag.visMin.toFixed(2));
+  rows.push('infer ' + G.poseMs.toFixed(0) + 'ms  render ' + G.fps.toFixed(0) + 'fps' +
+            (Diag.inferErrors ? '  <span class="bad">err ' + Diag.inferErrors + '</span>' : ''));
+  rows.push('tip ' + Bat.tip.x.toFixed(2) + ',' + Bat.tip.y.toFixed(2) +
+            '  spd ' + Bat.tipSpeed.toFixed(2) + (Bat.ok ? '' : ' <span class="wait">stale</span>'));
+  if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
+  return rows;
+}
+
 function paintDiag(){
   const el = document.getElementById('dbgPanel');
-  if(!DEBUG){ el.hidden = true; return; }
+  const btn = document.getElementById('dbgToggle');
+  if(!DEBUG){ el.hidden = true; btn.hidden = true; return; }
+  btn.hidden = false;
+
+  // a failure always shows in full, whatever the player last chose
+  const mode = anyStepBad() ? 'full' : dbgMode;
+  btn.textContent = mode === 'full' ? 'dbg full' : mode === 'mini' ? 'dbg mini' : 'dbg off';
+  if(mode === 'off'){ el.hidden = true; return; }
   el.hidden = false;
+  el.classList.toggle('mini', mode === 'mini');
+
+  if(mode === 'mini'){ el.innerHTML = liveRows().join('\n'); return; }
+
   const rows = [];
   for(const k of STEP_ORDER){
     const st = Diag.state[k][0], detail = Diag.state[k][1];
-    const mark = st === 'ok' ? 'OK  ' : st === 'bad' ? 'FAIL' : st === 'warn' ? 'WARN' : '..  ';
-    rows.push('<span class="' + st + '">' + mark + ' ' + padTo(STEP_LABEL[k], 18) +
+    const mark = st === 'ok' ? 'OK ' : st === 'bad' ? 'FAIL' : st === 'warn' ? 'WARN' : '.. ';
+    rows.push('<span class="' + st + '">' + mark + ' ' + padTo(STEP_SHORT[k], 9) +
               (detail ? esc(detail) : '') + '</span>');
   }
   rows.push('');
-  rows.push('want  ' + esc(Diag.camWant));
-  rows.push('got   ' + esc(Diag.camGot) + '   measured ' +
+  rows.push('want ' + esc(Diag.camWant));
+  rows.push('got  ' + esc(Diag.camGot) + '  measured ' +
             (isNaN(Diag.camMeasured) ? 'n/a' : Diag.camMeasured.toFixed(0) + 'fps'));
   rows.push('delegate ' + esc(Diag.delegate) + (Diag.gpuNote ? ' <span class="warn">(' + esc(Diag.gpuNote) + ')</span>' : ''));
   rows.push('');
-  rows.push('pose ' + (Diag.pose ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
-            '   wrists ' + (Diag.wrists ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
-            ' ' + Diag.visMin.toFixed(2));
-  rows.push('infer ' + G.poseMs.toFixed(1) + 'ms   render ' + G.fps.toFixed(0) + 'fps' +
-            (Diag.inferErrors ? '   <span class="bad">err ' + Diag.inferErrors + '</span>' : ''));
-  if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
-  rows.push('');
-  rows.push('grip  ' + Bat.grip.x.toFixed(2) + ', ' + Bat.grip.y.toFixed(2) + (Bat.ok ? '' : '  (stale)'));
-  rows.push('tip   ' + Bat.tip.x.toFixed(2) + ', ' + Bat.tip.y.toFixed(2));
-  rows.push('speed ' + Bat.tipSpeed.toFixed(2) + '/s');
-  rows.push('top hand ' + esc(Diag.topHand) + '  (x mirrored)');
+  rows.push.apply(rows, liveRows());
+  rows.push('grip ' + Bat.grip.x.toFixed(2) + ',' + Bat.grip.y.toFixed(2));
+  rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
   el.innerHTML = rows.join('\n');
 }
 
@@ -1096,6 +1127,8 @@ $('startBtn').addEventListener('click', async ()=>{
     hoardMat.needsUpdate = true;
     batMat.map = batTexture(sp.bat || SPONSOR_FALLBACK.bat);
     batMat.needsUpdate = true;
+    if(!anyStepBad() && dbgMode === 'full') dbgMode = 'mini';   // startup is green; stop hiding the game
+    paintDiag();
     startBenchmark();
   }catch(err){
     const e = fatal(err);                       // on screen, with the failing step named
@@ -1143,6 +1176,11 @@ $('againBtn').addEventListener('click', ()=>{
 document.addEventListener('visibilitychange', ()=>{
   if(document.hidden && G.phase === 'live'){ G.phase = 'paused'; }
   else if(!document.hidden && G.phase === 'paused'){ G.phase = 'live'; G.nextAt = performance.now()+900; }
+});
+
+document.getElementById('dbgToggle').addEventListener('click', ()=>{
+  dbgMode = dbgMode === 'full' ? 'mini' : dbgMode === 'mini' ? 'off' : 'full';
+  paintDiag();
 });
 
 resize();
