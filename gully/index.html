@@ -77,6 +77,10 @@
     font-variant-numeric:tabular-nums}
   #wagonKey div{display:flex;gap:9px;align-items:center;white-space:nowrap}
   #wagonKey i{width:14px;height:3px;border-radius:2px;flex:none}
+  #wagonLog{font:11px/1.5 ui-monospace,Menlo,monospace;color:#8FE8BE;white-space:pre;
+    max-height:min(46vh,240px);overflow:auto;padding:8px 10px;border-radius:8px;
+    background:rgba(6,10,13,.6);box-shadow:inset 0 0 0 1px rgba(120,190,160,.22)}
+  #wagonLog[hidden]{display:none}
 
   /* ---- calibration ---- */
   .gauge{height:5px;background:rgba(242,246,244,.14);border-radius:99px;overflow:hidden;max-width:320px}
@@ -189,6 +193,7 @@
       <div id="wagonWrap">
         <canvas id="wagon"></canvas>
         <div id="wagonKey"></div>
+        <div id="wagonLog" hidden></div>
       </div>
     </div>
     <div class="row">
@@ -345,6 +350,10 @@ function paintDiag(){
   btn.hidden = false;
 
   // a failure always shows in full, whatever the player last chose
+  // the innings-over screen carries its own per-shot log; the live panel would
+  // only sit on top of it
+  if(!document.getElementById('p-over').hidden){ el.hidden = true; btn.hidden = true; return; }
+
   const mode = anyStepBad() ? 'full' : dbgMode;
   btn.textContent = mode === 'full' ? 'dbg full' : mode === 'mini' ? 'dbg mini' : 'dbg off';
   if(mode === 'off'){ el.hidden = true; return; }
@@ -927,18 +936,18 @@ function shotLine(dirX, dirY, speed, u, remaining, win){
    visible from here, so they are not guessed at. */
 
 const FOLLOW = {
-  'Helicopter':     { spin:5.60, lift:0.34, sweep:0.10, dur:620 },
-  'Straight drive': { spin:0.55, lift:0.30, sweep:0.04, dur:430 },
-  'Lofted drive':   { spin:0.75, lift:0.40, sweep:0.06, dur:500 },
-  'Cover drive':    { spin:0.85, lift:0.26, sweep:0.18, dur:440 },
-  'On drive':       { spin:0.80, lift:0.24, sweep:0.16, dur:440 },
-  'Square drive':   { spin:1.15, lift:0.14, sweep:0.26, dur:440 },
-  'Square cut':     { spin:1.35, lift:0.10, sweep:0.30, dur:440 },
-  'Pull':           { spin:1.70, lift:0.16, sweep:0.34, dur:490 },
-  'Late cut':       { spin:1.05, lift:0.04, sweep:0.22, dur:400 },
-  'Glance':         { spin:0.45, lift:0.05, sweep:0.12, dur:360 },
-  'Flick':          { spin:0.70, lift:0.18, sweep:0.16, dur:410 },
-  'Defensive push': { spin:0.14, lift:0.04, sweep:0.03, dur:270 },
+  'Helicopter':     { spin:6.28, lift:0.45, sweep:0.12, dur:760 },   // the full turn
+  'Straight drive': { spin:1.20, lift:0.55, sweep:0.06, dur:620 },   // finishes high
+  'Lofted drive':   { spin:1.40, lift:0.70, sweep:0.08, dur:700 },
+  'Cover drive':    { spin:1.60, lift:0.45, sweep:0.30, dur:640 },
+  'On drive':       { spin:1.50, lift:0.42, sweep:0.28, dur:640 },
+  'Square drive':   { spin:2.10, lift:0.22, sweep:0.45, dur:640 },
+  'Square cut':     { spin:2.40, lift:0.16, sweep:0.52, dur:640 },   // flat and wide
+  'Pull':           { spin:3.00, lift:0.26, sweep:0.60, dur:700 },
+  'Late cut':       { spin:1.90, lift:0.06, sweep:0.38, dur:600 },
+  'Glance':         { spin:0.80, lift:0.08, sweep:0.20, dur:480 },   // barely a stroke
+  'Flick':          { spin:1.20, lift:0.30, sweep:0.26, dur:560 },
+  'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
 };
 
 function classifyShot(line, speed, spin, loft){
@@ -1002,7 +1011,9 @@ function playShot(b, u, remaining){
                  spin: f.spin, lift: f.lift, sweep: f.sweep };
 
   G.runs += runs;
-  G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot });
+  G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
+                 across:line.across, timing:line.timing, blade:line.blade,
+                 hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
                   line.across.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
@@ -1082,6 +1093,19 @@ function drawWagon(){
   const n = r => G.wagon.filter(s => s.runs === r).length;
   const scoring = G.wagon.filter(s => s.runs > 0).length;
   const beaten  = G.balls - G.wagon.length;
+  const log = document.getElementById('wagonLog');
+  log.hidden = !DEBUG;
+  if(DEBUG){
+    const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
+    log.textContent = 'ball  line  across  timing  blade  hand  spin  shot\n' +
+      G.wagon.map((s, i) =>
+        String(i+1).padStart(3) + ' ' +
+        ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
+        f(s.across,5) + '  ' + f(s.timing,5) + '  ' + f(s.blade,5) + ' ' +
+        s.hand.toFixed(1).padStart(5) + ' ' + s.spin.toFixed(1).padStart(5) + '  ' + s.shot
+      ).join('\n');
+  }
+
   document.getElementById('wagonKey').innerHTML = [
     ['#FFB020', n(6) + (n(6) === 1 ? ' six' : ' sixes')],
     ['#FF2D7A', n(4) + (n(4) === 1 ? ' four' : ' fours')],
@@ -1199,7 +1223,11 @@ function loop(now){
       const k = (now - f.t0) / f.dur;
       if(k >= 1){ Bat.follow = null; }
       else {
-        const e = Math.sin(Math.PI * k);          // 0 -> 1 -> 0
+        // Out fast, back slow — a stroke, not a wobble. A symmetric bump reads as
+        // the bat twitching and returning; the real thing whips through and then
+        // unwinds.
+        const e = k < 0.30 ? 1 - Math.pow(1 - k/0.30, 2)
+                           : 1 - Math.pow((k - 0.30)/0.70, 2);
         bat.rotation.z += f.spin  * f.sign * e;
         bat.position.x += f.sweep * f.sign * e;
         bat.position.y += f.lift  * e;
