@@ -287,7 +287,7 @@ const Diag = {
   camWant: '960x720, 60fps ideal / 24 min',
   camGot: '-', camMeasured: 0,
   delegate: '-', gpuNote: '',
-  camNote: '', batWhy: '', screen: 'windowed', view: '', lastShot: '-',
+  camNote: '', batWhy: '', screen: 'windowed', view: '', lastShot: '-', lastShot2: '',
   inferErrors: 0, inferFirst: '',
   pose: false, wrists: false, visMin: 0, topHand: '-',
 };
@@ -333,6 +333,7 @@ function liveRows(){
   rows.push(Bat.ok ? '<span class="ok">bat live</span>'
                    : '<span class="bad">no bat: ' + esc(Diag.batWhy || 'waiting') + '</span>');
   rows.push('shot ' + esc(Diag.lastShot));
+  if(Diag.lastShot2) rows.push('     ' + esc(Diag.lastShot2));
   if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
   return rows;
 }
@@ -729,6 +730,7 @@ const L_WRIST=15, R_WRIST=16, L_SHO=11, R_SHO=12;
 const Bat = {
   ok:false, grip:{x:0,y:0}, tip:{x:0,y:0}, axis:{x:0,y:-1},
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
+  mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
 };
 
 function mapToWorld(nx, ny){
@@ -785,6 +787,24 @@ function updateBat(lm, now, dt){
     const inst = Math.hypot(Bat.tipVel.x, Bat.tipVel.y);
     Bat.tipSpeed = Math.max(inst, Bat.tipSpeed * 0.82);   // decay-hold, survives a dropped frame
   }
+
+  // Which way the shot goes is read from the hands, not the tip. The tip is the
+  // hands plus a 0.9m lever, so a degree of wobble in the hand-to-hand axis moves
+  // it further than the swing does, and the lever noise is all sideways: a
+  // straight drive measured at the tip reads as a cut. Direction also gets the
+  // decay-hold speed has, because pose runs every ~70ms against a swing that
+  // crosses the zone in ~100ms, and the sample at contact is usually the
+  // deceleration afterwards.
+  const midNow = { x:(a.x + b.x)/2, y:(a.y + b.y)/2 };
+  Bat.mid = Bat.mid ? { x: Bat.mid.x + (midNow.x - Bat.mid.x)*g,
+                        y: Bat.mid.y + (midNow.y - Bat.mid.y)*g } : midNow;
+  if(Bat.prevMid && dt > 0){
+    const hx = (Bat.mid.x - Bat.prevMid.x)/dt, hy = (Bat.mid.y - Bat.prevMid.y)/dt;
+    const hs = Math.hypot(hx, hy);
+    if(hs >= Bat.handSpeed && hs > 0.2){ Bat.swingDir.x = hx/hs; Bat.swingDir.y = hy/hs; }
+    Bat.handSpeed = Math.max(hs, Bat.handSpeed * 0.82);
+  }
+  Bat.prevMid = { ...Bat.mid };
   Bat.prevTip = { ...tip };
   Bat.tip = tip;
   Bat.ok = true;
@@ -862,18 +882,32 @@ function tryHit(b){
   return true;
 }
 
-/* Line of the shot.
-   across: how much of the swing was lateral at contact — swing across your body
-   and it goes square, swing down the ground and it goes straight. A bat that is
-   barely moving places nothing, so a nudge plays straight rather than randomly.
-   blade: where along the blade it struck. The toe is further round the arc and
-   carries the ball on; nearer the handle squirts it back the other way. */
-function shotLine(velX, velY, u){
-  const sw     = Math.hypot(velX, velY);
-  const across = sw > 0.25 ? clamp(velX / sw, -1, 1) : 0;
+/* Line of the shot, from three things the player controls.
+
+   across  swinging across the ball rather than down it — taken from the swing's
+           direction at its fastest, not at the instant contact was noticed
+   timing  meeting it early or late. This is how placement actually works with a
+           bat in your hands, and it is the one axis pose cadence cannot blur,
+           because the ball's clock is exact
+   blade   where along the blade it struck: the toe is further round the arc and
+           carries the ball on, nearer the handle squirts it back
+
+   A bat that is barely moving places nothing, so a nudge plays straight. */
+
+const SWING_GAIN  = 1.25;
+const TIMING_GAIN = 0.70;
+const BLADE_GAIN  = 0.30;
+const LINE_LIMIT  = 1.40;   // ~80 degrees either side of straight
+
+function shotLine(dirX, dirY, speed, u, remaining, win){
+  const mag    = Math.hypot(dirX, dirY) || 1;
+  const across = speed > 0.3 ? clamp(dirX / mag, -1, 1) : 0;
+  const timing = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
   const blade  = clamp((u - 0.74) / 0.42, -1, 1);
   const sense  = across >= 0 ? 1 : -1;
-  return clamp(across * 1.15 + blade * 0.30 * sense, -1.25, 1.25);
+  const angle  = clamp(across*SWING_GAIN + timing*TIMING_GAIN + blade*BLADE_GAIN*sense,
+                       -LINE_LIMIT, LINE_LIMIT);
+  return { angle, across, timing, blade };
 }
 
 function playShot(b, u, remaining){
@@ -889,7 +923,8 @@ function playShot(b, u, remaining){
   // Tilt used to place it, which saturated the moment a player held the stick
   // with their hands level: the axis read horizontal and every ball went square
   // to the same side before the swing even started.
-  const hAngle = shotLine(Bat.tipVel.x, Bat.tipVel.y, u);
+  const line   = shotLine(Bat.swingDir.x, Bat.swingDir.y, Bat.handSpeed, u, remaining, t.hitMs/2000);
+  const hAngle = line.angle;
 
   // upward swing lofts it
   const rise   = clamp(Bat.tipVel.y / 9, -1, 1);
@@ -918,8 +953,11 @@ function playShot(b, u, remaining){
 
   G.runs += runs;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label });
-  Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg  u ' + u.toFixed(2) +
-                  '  sweet ' + sweet.toFixed(2) + '  ' + label;
+  Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
+                  line.across.toFixed(2) + ' time ' + line.timing.toFixed(2) +
+                  ' blade ' + line.blade.toFixed(2);
+  Diag.lastShot2 = 'spd ' + Bat.tipSpeed.toFixed(1) + '  pow ' + power.toFixed(2) +
+                   '  sweet ' + sweet.toFixed(2) + '  ' + label;
   showCallout(label, sub, runs>=4 ? '#FFB020' : '#F2F6F4');
   endBall();
 }
