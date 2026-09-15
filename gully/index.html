@@ -76,6 +76,21 @@
     font-variant-numeric:tabular-nums;pointer-events:none}
   #settingsBtn{position:absolute;right:12px;bottom:12px;padding:9px 16px;font-size:13px;pointer-events:auto}
   @media (prefers-reduced-motion:reduce){#callout.show{animation-duration:.01s;opacity:1}}
+
+  /* ── diagnostics: readable from two metres, never in the way of a tap ── */
+  #dbgPanel{position:absolute;left:0;top:0;max-width:min(460px,56vw);margin:8px;padding:10px 12px;
+    border-radius:10px;background:rgba(6,10,13,.86);box-shadow:inset 0 0 0 1px rgba(120,190,160,.28);
+    font:700 clamp(13px,2.7vw,19px)/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#8FE8BE;white-space:pre-wrap;pointer-events:none;z-index:40;letter-spacing:.01em}
+  #dbgPanel .ok{color:#8FE8BE}
+  #dbgPanel .bad{color:#FF7B72}
+  #dbgPanel .wait{color:#C9D6CF;opacity:.65}
+  #dbgPanel .warn{color:#FFC14D}
+  #fatal{position:absolute;left:0;right:0;top:0;margin:0;padding:18px 20px;z-index:60;
+    background:#5B1512;color:#FFE8E5;box-shadow:0 6px 24px rgba(0,0,0,.5);
+    font:800 clamp(17px,4.2vw,28px)/1.35 -apple-system,Segoe UI,Roboto,sans-serif}
+  #fatal .why{display:block;margin-top:8px;font-weight:600;font-size:clamp(12px,2.4vw,15px);
+    opacity:.85;font-family:ui-monospace,Menlo,monospace;word-break:break-word}
 </style>
 </head>
 <body>
@@ -92,6 +107,8 @@
   <div id="preview" hidden><canvas id="pv" width="264" height="198"></canvas></div>
   <div id="callout"></div>
   <div id="diag" hidden></div>
+  <div id="dbgPanel" hidden></div>
+  <div id="fatal" hidden></div>
   <button id="settingsBtn" class="ghost" hidden>Quality</button>
 
   <!-- intro -->
@@ -203,6 +220,112 @@ const clamp = (v,a,b)=>v<a?a:v>b?b:v;
 const lerp  = (a,b,t)=>a+(b-a)*t;
 
 /* ════════════════════════════════════════════════════════════════
+   DIAGNOSTICS
+   Every startup step reports itself, pass or fail. ?debug shows the
+   live panel; a failure shows either way, because a dead camera has
+   to say why rather than quietly becoming playable.
+   ═══════════════════════════════════════════════════════════════ */
+
+const DEBUG = /[?&]debug\b/.test(location.search);
+
+class BootError extends Error {
+  constructor(stepKey, sentence, cause){
+    super(sentence);
+    this.stepKey = stepKey; this.sentence = sentence; this.cause = cause;
+  }
+}
+
+const STEP_LABEL = {
+  permission: 'camera permission',
+  camera:     'camera stream',
+  wasm:       'mediapipe wasm',
+  model:      'pose model',
+  sponsors:   'sponsors.json',
+};
+const STEP_ORDER = ['permission','camera','wasm','model','sponsors'];
+
+const Diag = {
+  state: { permission:['wait',''], camera:['wait',''], wasm:['wait',''], model:['wait',''], sponsors:['wait',''] },
+  camWant: '960x720, 60fps ideal / 24 min',
+  camGot: '-', camMeasured: 0,
+  delegate: '-', gpuNote: '',
+  camNote: '',
+  inferErrors: 0, inferFirst: '',
+  pose: false, wrists: false, visMin: 0, topHand: '-',
+};
+
+const esc = t => String(t).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const padTo = (t,n) => (t + '                    ').slice(0, n);
+
+function step(key, state, detail){
+  Diag.state[key] = [state, detail == null ? '' : String(detail)];
+  paintDiag();
+}
+
+function fatal(err){
+  const e = err instanceof BootError
+    ? err
+    : new BootError('camera', 'Something failed before the game could start.', err);
+  step(e.stepKey, 'bad', e.sentence);
+  const c = e.cause;
+  const raw = c ? ((c.name ? c.name + ': ' : '') + (c.message || String(c))) : 'no further detail';
+  const el = document.getElementById('fatal');
+  el.innerHTML = esc(e.sentence) +
+    '<span class="why">' + esc(STEP_LABEL[e.stepKey] || e.stepKey) + ' — ' + esc(raw) + '</span>';
+  el.hidden = false;
+  console.error('[gully] ' + e.stepKey + ' failed:', e.sentence, c || '');
+  return e;
+}
+
+function clearFatal(){ document.getElementById('fatal').hidden = true; }
+
+function paintDiag(){
+  const el = document.getElementById('dbgPanel');
+  if(!DEBUG){ el.hidden = true; return; }
+  el.hidden = false;
+  const rows = [];
+  for(const k of STEP_ORDER){
+    const st = Diag.state[k][0], detail = Diag.state[k][1];
+    const mark = st === 'ok' ? 'OK  ' : st === 'bad' ? 'FAIL' : st === 'warn' ? 'WARN' : '..  ';
+    rows.push('<span class="' + st + '">' + mark + ' ' + padTo(STEP_LABEL[k], 18) +
+              (detail ? esc(detail) : '') + '</span>');
+  }
+  rows.push('');
+  rows.push('want  ' + esc(Diag.camWant));
+  rows.push('got   ' + esc(Diag.camGot) + '   measured ' +
+            (isNaN(Diag.camMeasured) ? 'n/a' : Diag.camMeasured.toFixed(0) + 'fps'));
+  rows.push('delegate ' + esc(Diag.delegate) + (Diag.gpuNote ? ' <span class="warn">(' + esc(Diag.gpuNote) + ')</span>' : ''));
+  rows.push('');
+  rows.push('pose ' + (Diag.pose ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
+            '   wrists ' + (Diag.wrists ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') +
+            ' ' + Diag.visMin.toFixed(2));
+  rows.push('infer ' + G.poseMs.toFixed(1) + 'ms   render ' + G.fps.toFixed(0) + 'fps' +
+            (Diag.inferErrors ? '   <span class="bad">err ' + Diag.inferErrors + '</span>' : ''));
+  if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
+  rows.push('');
+  rows.push('grip  ' + Bat.grip.x.toFixed(2) + ', ' + Bat.grip.y.toFixed(2) + (Bat.ok ? '' : '  (stale)'));
+  rows.push('tip   ' + Bat.tip.x.toFixed(2) + ', ' + Bat.tip.y.toFixed(2));
+  rows.push('speed ' + Bat.tipSpeed.toFixed(2) + '/s');
+  rows.push('top hand ' + esc(Diag.topHand) + '  (x mirrored)');
+  el.innerHTML = rows.join('\n');
+}
+
+/* measured capture rate — getSettings reports what was negotiated,
+   which on Android is routinely not what arrives */
+let vfcN = 0, vfcT0 = 0;
+function startCamFpsProbe(v){
+  if(typeof v.requestVideoFrameCallback !== 'function'){ Diag.camMeasured = NaN; return; }
+  const tick = (now)=>{
+    if(!vfcT0) vfcT0 = now;
+    vfcN++;
+    const dt = (now - vfcT0)/1000;
+    if(dt >= 1){ Diag.camMeasured = vfcN/dt; vfcN = 0; vfcT0 = now; }
+    v.requestVideoFrameCallback(tick);
+  };
+  v.requestVideoFrameCallback(tick);
+}
+
+/* ════════════════════════════════════════════════════════════════
    SPONSORS — remote config, bundled fallback, textures drawn on the fly
    Swap a URL, not an APK.
    ═══════════════════════════════════════════════════════════════ */
@@ -219,10 +342,12 @@ const SPONSOR_FALLBACK = {
 async function loadSponsors(){
   try{
     const r = await fetch('./sponsors.json', { cache:'no-cache' });
-    if(!r.ok) throw 0;
+    if(!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
+    step('sponsors', 'ok', 'from sponsors.json');
     return { ...SPONSOR_FALLBACK, ...j };
-  }catch{
+  }catch(err){
+    step('sponsors', 'warn', 'bundled fallback — ' + ((err && err.message) || err));
     return SPONSOR_FALLBACK;                       // offline / first run
   }
 }
@@ -387,24 +512,116 @@ const infCtx = infCanvas.getContext('2d', { willReadFrequently:false });
 
 let landmarker = null, loadedModel = null;
 
+async function probePermission(){
+  try{
+    if(!navigator.permissions || !navigator.permissions.query) return 'unknown (no Permissions API)';
+    const st = await navigator.permissions.query({ name:'camera' });
+    return st.state;
+  }catch{ return 'unknown (query unsupported)'; }
+}
+
+function cameraSentence(err){
+  const n = err && err.name;
+  if(n === 'NotAllowedError')    return 'The camera is blocked. Allow camera access for this page, then try again.';
+  if(n === 'NotFoundError')      return 'No camera was found on this device.';
+  if(n === 'NotReadableError')   return 'The camera is busy. Close any other app using it, then try again.';
+  if(n === 'OverconstrainedError') return 'This camera cannot provide the requested video format.';
+  if(n === 'SecurityError')      return 'The browser refused camera access on this page. It must be served over https.';
+  if(!navigator.mediaDevices)    return 'This browser exposes no camera API. It needs https and a recent Chrome.';
+  return 'The camera did not open.';
+}
+
 async function openCamera(){
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio:false,
-    video:{ facingMode:'user', width:{ideal:960}, height:{ideal:720}, frameRate:{ideal:60, min:24} }
-  });
+  step('permission', 'wait', 'asking');
+  const before = await probePermission();
+
+  // min: is a REQUIRED constraint, not a preference — a camera that cannot
+  // promise 24fps is rejected outright rather than clamped. Ask as specified,
+  // then retry without the floor and say so, instead of failing to start.
+  const BASE = { facingMode:'user', width:{ideal:960}, height:{ideal:720} };
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio:false, video:{ ...BASE, frameRate:{ ideal:60, min:24 } }
+    });
+  }catch(err){
+    if(err && err.name === 'OverconstrainedError'){
+      Diag.camNote = 'refused the 24fps floor, reopened without it';
+      console.warn('[gully] camera refused frameRate.min 24, retrying without the floor');
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio:false, video:{ ...BASE, frameRate:{ ideal:60 } }
+        });
+      }catch(err2){
+        step('permission', 'bad', await probePermission());
+        throw new BootError('camera', cameraSentence(err2), err2);
+      }
+    }else{
+      step('permission', 'bad', await probePermission());
+      throw new BootError('camera', cameraSentence(err), err);
+    }
+  }
+  step('permission', 'ok', await probePermission() + (before === 'prompt' ? ' (just granted)' : ''));
+
   video.srcObject = stream;
-  await video.play();
-  await new Promise(r=>{ if(video.videoWidth) r(); else video.onloadedmetadata=r; });
+  try{
+    await video.play();
+  }catch(err){
+    throw new BootError('camera', 'The camera opened but the video would not start playing.', err);
+  }
+
+  // never wait forever: a stream that yields no metadata is a failure, not a hang
+  if(!video.videoWidth){
+    await new Promise((resolve, reject)=>{
+      const to = setTimeout(()=>reject(new BootError('camera',
+        'The camera opened but sent no video frames.', new Error('timed out after 6s waiting for loadedmetadata'))), 6000);
+      video.onloadedmetadata = ()=>{ clearTimeout(to); resolve(); };
+    });
+  }
+
+  const track = stream.getVideoTracks()[0];
+  const st = (track && track.getSettings) ? track.getSettings() : {};
+  Diag.camGot = (st.width || video.videoWidth) + 'x' + (st.height || video.videoHeight) +
+                ', ' + (st.frameRate ? st.frameRate.toFixed(0) + 'fps' : 'fps not reported');
+  step('camera', Diag.camNote ? 'warn' : 'ok', Diag.camGot + (Diag.camNote ? ' — ' + Diag.camNote : ''));
+  startCamFpsProbe(video);
 }
 
 async function buildLandmarker(which){
   if(loadedModel === which && landmarker) return;
-  const fileset = await FilesetResolver.forVisionTasks(WASM);
-  const next = await PoseLandmarker.createFromOptions(fileset, {
-    baseOptions:{ modelAssetPath: MODEL[which], delegate:'GPU' },
-    runningMode:'VIDEO', numPoses:1,
-    minPoseDetectionConfidence:.5, minPosePresenceConfidence:.5, minTrackingConfidence:.5,
-  });
+
+  let fileset;
+  try{
+    step('wasm', 'wait', 'fetching');
+    fileset = await FilesetResolver.forVisionTasks(WASM);
+  }catch(err){
+    throw new BootError('wasm', 'The pose engine files did not load. Check the connection and reload.', err);
+  }
+  step('wasm', 'ok', 'tasks-vision 0.10.14');
+
+  // GPU first, CPU if the delegate is refused — which one won is printed, never assumed
+  step('model', 'wait', which);
+  let next = null;
+  for(const delegate of ['GPU','CPU']){
+    try{
+      next = await PoseLandmarker.createFromOptions(fileset, {
+        baseOptions:{ modelAssetPath: MODEL[which], delegate },
+        runningMode:'VIDEO', numPoses:1,
+        minPoseDetectionConfidence:.5, minPosePresenceConfidence:.5, minTrackingConfidence:.5,
+      });
+      Diag.delegate = delegate;
+      break;
+    }catch(err){
+      if(delegate === 'GPU'){
+        Diag.gpuNote = 'GPU refused: ' + ((err && err.message) || err);
+        console.warn('[gully] GPU delegate refused, trying CPU:', err);
+        continue;
+      }
+      throw new BootError('model', 'The pose model would not load on either the GPU or the CPU.', err);
+    }
+  }
+
+  step('model', Diag.gpuNote ? 'warn' : 'ok', which + ' on ' + Diag.delegate);
   if(landmarker) landmarker.close();
   landmarker = next; loadedModel = which;
 }
@@ -433,8 +650,10 @@ function updateBat(lm, now, dt){
   // mirror x — the player sees themselves, not the camera's view
   const a = mapToWorld(1 - lw.x, lw.y);
   const b = mapToWorld(1 - rw.x, rw.y);
-  const top = a.y >= b.y ? a : b;        // higher hand is the top hand
-  const bot = a.y >= b.y ? b : a;
+  const aIsTop = a.y >= b.y;
+  const top = aIsTop ? a : b;            // higher hand is the top hand
+  const bot = aIsTop ? b : a;
+  Diag.topHand = aIsTop ? 'lm15 left wrist' : 'lm16 right wrist';
 
   let ax = bot.x - top.x, ay = bot.y - top.y;
   const len = Math.hypot(ax, ay);
@@ -659,10 +878,21 @@ function loop(now){
     infCtx.drawImage(video, 0, 0, w, h);
     const t0 = performance.now();
     let res = null;
-    try{ res = landmarker.detectForVideo(infCanvas, now); }catch{}
+    try{
+      res = landmarker.detectForVideo(infCanvas, now);
+    }catch(err){
+      Diag.inferErrors++;
+      if(!Diag.inferFirst){
+        Diag.inferFirst = 'inference: ' + ((err && err.message) || err);
+        console.error('[gully] detectForVideo threw', err);
+      }
+    }
     G.poseMs = G.poseMs*0.85 + (performance.now()-t0)*0.15;
     const lm = res && res.landmarks && res.landmarks[0] ? res.landmarks[0] : null;
     G.lastLm = lm;
+    Diag.pose = !!lm;
+    Diag.visMin = lm ? Math.min(lm[L_WRIST].visibility ?? 1, lm[R_WRIST].visibility ?? 1) : 0;
+    Diag.wrists = Diag.visMin > 0.35;
     updateBat(lm, now, (now - poseT)/1000 || dt);
     poseT = now;
     if(!document.getElementById('preview').hidden) drawPreview(lm);
@@ -723,7 +953,9 @@ function loop(now){
   renderer.render(scene, camera);
   if(!$('diag').hidden)
     $('diag').textContent = `${G.fps.toFixed(0)} fps · pose ${G.poseMs.toFixed(1)}ms · ${G.tier}`;
+  if(DEBUG && now - lastDbgPaint > 120){ lastDbgPaint = now; paintDiag(); }
 }
+let lastDbgPaint = 0;
 
 /* --- thermal drift: phones lose a tier after a few minutes of camera + GPU --- */
 let hotSince = 0;
@@ -802,7 +1034,11 @@ function applyTier(name, keepPlaying){
 
 async function buildTier(name){
   try{ await buildLandmarker(TIERS[name].model); }
-  catch(e){ console.warn('model swap failed', e); }
+  catch(err){
+    step('model', 'bad', 'swap to ' + name + ' failed, staying on ' + (loadedModel || 'none'));
+    showCallout('', 'Could not switch model — staying on ' + (loadedModel || 'none'), '#FF7B72');
+    console.error('[gully] model swap failed', err);
+  }
 }
 
 function markTierButtons(){
@@ -848,6 +1084,7 @@ function showCallout(big, sub, colour){
 $('startBtn').addEventListener('click', async ()=>{
   $('startBtn').disabled = true;
   $('startBtn').textContent = 'Starting…';
+  clearFatal();
   try{
     await openCamera();
     show('p-calib');
@@ -861,12 +1098,13 @@ $('startBtn').addEventListener('click', async ()=>{
     batMat.needsUpdate = true;
     startBenchmark();
   }catch(err){
+    const e = fatal(err);                       // on screen, with the failing step named
+    G.phase = 'idle';
+    $('preview').hidden = true;
+    show('p-intro');
     $('startBtn').disabled = false;
-    $('startBtn').textContent = 'Try the camera again';
-    $('p-intro').querySelector('p').textContent =
-      err && err.name === 'NotAllowedError'
-        ? 'The camera is blocked. Allow camera access for this page, then try again.'
-        : 'No camera came through. Check nothing else is using it, then try again.';
+    $('startBtn').textContent = 'Try again';
+    $('p-intro').querySelector('p').textContent = e.sentence;
   }
 });
 
@@ -909,6 +1147,7 @@ document.addEventListener('visibilitychange', ()=>{
 
 resize();
 markTierButtons();
+paintDiag();
 requestAnimationFrame(loop);
 </script>
 </body>
