@@ -260,7 +260,7 @@ const Diag = {
   camWant: '960x720, 60fps ideal / 24 min',
   camGot: '-', camMeasured: 0,
   delegate: '-', gpuNote: '',
-  camNote: '',
+  camNote: '', batWhy: '',
   inferErrors: 0, inferFirst: '',
   pose: false, wrists: false, visMin: 0, topHand: '-',
 };
@@ -302,7 +302,9 @@ function liveRows(){
   rows.push('infer ' + G.poseMs.toFixed(0) + 'ms  render ' + G.fps.toFixed(0) + 'fps' +
             (Diag.inferErrors ? '  <span class="bad">err ' + Diag.inferErrors + '</span>' : ''));
   rows.push('tip ' + Bat.tip.x.toFixed(2) + ',' + Bat.tip.y.toFixed(2) +
-            '  spd ' + Bat.tipSpeed.toFixed(2) + (Bat.ok ? '' : ' <span class="wait">stale</span>'));
+            '  spd ' + Bat.tipSpeed.toFixed(2));
+  rows.push(Bat.ok ? '<span class="ok">bat live</span>'
+                   : '<span class="bad">no bat: ' + esc(Diag.batWhy || 'waiting') + '</span>');
   if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
   return rows;
 }
@@ -672,11 +674,22 @@ function mapToWorld(nx, ny){
   return { x: lerp(MAP.wx, MAP.wx1, tx), y: lerp(MAP.wy, MAP.wy1, ty) };
 }
 
+const inFrame = p => p.x > 0.02 && p.x < 0.98 && p.y > 0.02 && p.y < 0.98;
+
 function updateBat(lm, now, dt){
-  if(!lm){ Bat.ok = false; return; }
+  if(!lm){ Bat.ok = false; Diag.batWhy = 'no pose'; return; }
   const lw = lm[L_WRIST], rw = lm[R_WRIST];
   const vis = Math.min(lw.visibility ?? 1, rw.visibility ?? 1);
-  if(vis < 0.35){ Bat.ok = false; return; }
+  if(vis < 0.35){ Bat.ok = false; Diag.batWhy = 'wrists unsure ' + vis.toFixed(2); return; }
+  // visibility stays high for joints the model is extrapolating past the edge
+  // of the image, so a player whose hands are out of shot gets a bat built from
+  // a guess that drifts with their torso. Off-frame wrists are not a bat.
+  if(!inFrame(lw) || !inFrame(rw)){
+    Bat.ok = false;
+    Diag.batWhy = 'wrists off-frame';
+    return;
+  }
+  Diag.batWhy = '';
 
   // mirror x — the player sees themselves, not the camera's view
   const a = mapToWorld(1 - lw.x, lw.y);
@@ -879,7 +892,12 @@ function stepPhysics(dt){
     b.vy -= g*dt;
     b.x += b.vx*dt; b.y += b.vy*dt; b.z += b.vz*dt;
     if(b.y <= BALL_R){ b.y = BALL_R; b.vy *= -0.42; b.vx *= 0.7; b.vz *= 0.7; }
-    if(Math.hypot(b.x,b.z) > BOUNDARY_R + 8) b.state = 'dead';
+    b.age = (b.age || 0) + dt;
+    // Crossing the boundary is not the only way a shot ends. Each bounce takes
+    // 30% off the horizontal, so anything short of the rope decays to a stop
+    // well inside it — without these it never goes dead and the over stalls.
+    const atRest = b.y <= BALL_R*1.05 && Math.hypot(b.vx, b.vz) < 0.7;
+    if(Math.hypot(b.x,b.z) > BOUNDARY_R + 8 || atRest || b.age > 6) b.state = 'dead';
   }
 }
 
