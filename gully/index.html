@@ -260,7 +260,7 @@ const Diag = {
   camWant: '960x720, 60fps ideal / 24 min',
   camGot: '-', camMeasured: 0,
   delegate: '-', gpuNote: '',
-  camNote: '', batWhy: '', screen: 'windowed', view: '',
+  camNote: '', batWhy: '', screen: 'windowed', view: '', lastShot: '-',
   inferErrors: 0, inferFirst: '',
   pose: false, wrists: false, visMin: 0, topHand: '-',
 };
@@ -305,6 +305,7 @@ function liveRows(){
             '  spd ' + Bat.tipSpeed.toFixed(2));
   rows.push(Bat.ok ? '<span class="ok">bat live</span>'
                    : '<span class="bad">no bat: ' + esc(Diag.batWhy || 'waiting') + '</span>');
+  rows.push('shot ' + esc(Diag.lastShot));
   if(Diag.inferFirst) rows.push('<span class="bad">' + esc(Diag.inferFirst) + '</span>');
   return rows;
 }
@@ -833,6 +834,20 @@ function tryHit(b){
   return true;
 }
 
+/* Line of the shot.
+   across: how much of the swing was lateral at contact — swing across your body
+   and it goes square, swing down the ground and it goes straight. A bat that is
+   barely moving places nothing, so a nudge plays straight rather than randomly.
+   blade: where along the blade it struck. The toe is further round the arc and
+   carries the ball on; nearer the handle squirts it back the other way. */
+function shotLine(velX, velY, u){
+  const sw     = Math.hypot(velX, velY);
+  const across = sw > 0.25 ? clamp(velX / sw, -1, 1) : 0;
+  const blade  = clamp((u - 0.74) / 0.42, -1, 1);
+  const sense  = across >= 0 ? 1 : -1;
+  return clamp(across * 1.15 + blade * 0.30 * sense, -1.25, 1.25);
+}
+
 function playShot(b, u, remaining){
   const t = TIERS[G.tier];
 
@@ -842,9 +857,11 @@ function playShot(b, u, remaining){
   const quality = 0.22 + 0.78 * (0.42*timing + 0.58*sweet);
   const speed  = (7 + power*21) * quality;
 
-  // bat tilt places the shot: vertical bat goes straight, horizontal bat goes square
-  const theta  = Math.atan2(Bat.axis.x, -Bat.axis.y);       // 0 = pointing straight down
-  const hAngle = clamp(theta * 0.95, -1.25, 1.25);
+  // Where the shot goes is decided by how you swung, not how you were standing.
+  // Tilt used to place it, which saturated the moment a player held the stick
+  // with their hands level: the axis read horizontal and every ball went square
+  // to the same side before the swing even started.
+  const hAngle = shotLine(Bat.tipVel.x, Bat.tipVel.y, u);
 
   // upward swing lofts it
   const rise   = clamp(Bat.tipVel.y / 9, -1, 1);
@@ -872,6 +889,8 @@ function playShot(b, u, remaining){
   else                         { runs=0; label='Dot'; sub= sweet<0.3 ? 'Off the edge' : 'Straight to the fielder'; }
 
   G.runs += runs;
+  Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg  u ' + u.toFixed(2) +
+                  '  sweet ' + sweet.toFixed(2) + '  ' + label;
   showCallout(label, sub, runs>=4 ? '#FFB020' : '#F2F6F4');
   endBall();
 }
