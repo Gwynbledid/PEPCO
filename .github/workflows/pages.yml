@@ -1,0 +1,32 @@
+name: Deploy gully to Pages
+
+on:
+  push:
+    branches: [claude/motion-cricket-mvp-usmu1w]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true          # turns Pages on for the repo, no settings visit needed
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: gully               # the game folder becomes the site root
+      - id: deployment
+        uses: actions/deploy-pages@v4
