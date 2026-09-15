@@ -895,9 +895,9 @@ function tryHit(b){
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
 const SWING_GAIN  = 1.25;
-const TIMING_GAIN = 0.70;
-const BLADE_GAIN  = 0.30;
-const LINE_LIMIT  = 1.40;   // ~80 degrees either side of straight
+const TIMING_GAIN = 1.35;   // timing is what sends it behind square in real cricket
+const BLADE_GAIN  = 0.35;
+const LINE_LIMIT  = 2.60;   // ~149 degrees: third man and fine leg are on the field
 
 function shotLine(dirX, dirY, speed, u, remaining, win){
   const mag    = Math.hypot(dirX, dirY) || 1;
