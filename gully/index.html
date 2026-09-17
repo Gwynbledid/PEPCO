@@ -961,10 +961,8 @@ function tryHit(b){
 
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
-const POS_GAIN    = 1.30;   // where you met it, measured against your own shoulders
-const TIMING_GAIN = 1.35;   // timing is what sends it behind square in real cricket
-const BLADE_GAIN  = 0.35;
-const LINE_LIMIT  = 2.60;   // ~149 degrees: third man and fine leg are on the field
+const POS_GAIN    = 1.40;   // where you met it, measured against your own shoulders
+const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing behind
 
 /* WHERE YOU MET IT decides the line.
 
@@ -979,8 +977,11 @@ const LINE_LIMIT  = 2.60;   // ~149 degrees: third man and fine leg are on the f
    of bat spin, and sent everything square to the off however the shot was
    played. A wrist landmark does not have that problem.
 
-   Timing then decides how fine, on the side the bat already chose — so behind
-   square is wide and late, which is what it is in the middle. */
+   Timing and where the ball struck the blade are still measured, but they no
+   longer touch the line. Between them they were swinging it up to 97 degrees on
+   top of a position the player had aimed, which is why a ball meant to go
+   straight could arrive anywhere. They belong to how WELL it was struck, not to
+   where it went. Nothing goes behind square now: the line caps at 80 degrees. */
 
 function shotLine(batX, bodyX, shoulderW, u, remaining, win){
   // Scaled to 60% of shoulder width: the ball only ever arrives within about
@@ -988,14 +989,10 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win){
   // length from the contact point, so a full shoulder was an extreme nobody
   // reached. Measured over a real innings the offset ran to 0.67 of a shoulder.
   const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * 0.60), -1, 1);
-  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
-  const blade   = clamp((u - 0.74) / 0.42, -1, 1);
-
-  const side    = Math.abs(lateral) > 0.12 ? (lateral > 0 ? 1 : -1)
-                                           : (timing >= 0 ? 1 : -1);  // late off, early leg
-  const round   = Math.abs(lateral)*POS_GAIN + Math.abs(timing)*TIMING_GAIN + blade*BLADE_GAIN;
-  const angle   = clamp(side * Math.max(round, 0), -LINE_LIMIT, LINE_LIMIT);
-  return { angle, lateral, timing, blade, side };
+  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // logged, not steering
+  const blade   = clamp((u - 0.74) / 0.42, -1, 1);                // logged, not steering
+  const angle   = clamp(lateral * POS_GAIN, -LINE_LIMIT, LINE_LIMIT);
+  return { angle, lateral, timing, blade };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
@@ -1005,32 +1002,26 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win){
    visible from here, so they are not guessed at. */
 
 const FOLLOW = {
-  'Helicopter':     { spin:6.28, lift:0.45, sweep:0.12, dur:760 },   // the full turn
   'Straight drive': { spin:1.20, lift:0.55, sweep:0.06, dur:620 },   // finishes high
   'Lofted drive':   { spin:1.40, lift:0.70, sweep:0.08, dur:700 },
   'Cover drive':    { spin:1.60, lift:0.45, sweep:0.30, dur:640 },
   'On drive':       { spin:1.50, lift:0.42, sweep:0.28, dur:640 },
   'Square drive':   { spin:2.10, lift:0.22, sweep:0.45, dur:640 },
-  'Square cut':     { spin:2.40, lift:0.16, sweep:0.52, dur:640 },   // flat and wide
-  'Pull':           { spin:3.00, lift:0.26, sweep:0.60, dur:700 },
-  'Late cut':       { spin:1.90, lift:0.06, sweep:0.38, dur:600 },
-  'Glance':         { spin:0.80, lift:0.08, sweep:0.20, dur:480 },   // barely a stroke
-  'Flick':          { spin:1.20, lift:0.30, sweep:0.26, dur:560 },
+  'Pull':           { spin:3.00, lift:0.26, sweep:0.60, dur:700 },   // flat and wide
   'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
 };
 
+/* Named from the line and how high it went. Bat spin is not used: it reads tens
+   of rad/s off a hand-to-hand axis that is barely separated, which named seven
+   shots in ten a helicopter. */
 function classifyShot(line, speed, spin, loft){
-  if(speed < 1.2)                 return 'Defensive push';
-  if(spin > 14 && speed > 5)      return 'Helicopter';   // a real whip, not axis noise
-
-  const deg  = line.angle * 57.2958;
-  const a    = Math.abs(deg);
-  const off  = deg >= 0;                       // +x is the off side
-
-  if(a < 22)  return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
-  if(a < 60)  return off ? 'Cover drive' : (line.timing < -0.25 ? 'Flick' : 'On drive');
-  if(a < 95)  return off ? (line.timing > 0.3 ? 'Square cut' : 'Square drive') : 'Pull';
-  return off ? 'Late cut' : 'Glance';
+  if(speed < 1.2) return 'Defensive push';
+  const deg = line.angle * 57.2958;
+  const a   = Math.abs(deg);
+  const off = deg >= 0;                        // +x is the off side
+  if(a < 22) return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
+  if(a < 55) return off ? 'Cover drive' : 'On drive';
+  return off ? 'Square drive' : 'Pull';
 }
 
 function playShot(b, u, remaining){
@@ -1178,8 +1169,7 @@ function drawWagon(){
         f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.blade,5) + ' ' +
         ((s.axis >= 0 ? '+' : '') + s.axis.toFixed(0)).padStart(5) + ' ' +
         f(s.sep,5) + ' ' + s.tip.toFixed(1).padStart(5) + ' ' +
-        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot +
-        (Math.abs(s.a*57.3) > 90 ? '  <BEHIND' : '')
+        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot
       ).join('\n');
   }
 
