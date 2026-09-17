@@ -743,6 +743,7 @@ const Bat = {
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
   prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
+  bodyX:0, shoulderW:1.0,
 };
 
 function mapToWorld(nx, ny){
@@ -753,20 +754,38 @@ function mapToWorld(nx, ny){
 
 const inFrame = p => p.x > 0.02 && p.x < 0.98 && p.y > 0.02 && p.y < 0.98;
 
+/* Tracking drops constantly — hands leave frame at the top of a backlift, the
+   model loses a wrist for a few frames. Every speed here is a position
+   difference divided by ONE pose interval, so resuming after a gap divided a
+   multi-frame jump by a single frame and invented a velocity. That is what
+   pegged across at 1.00 on nine balls out of nine, and read bat spin at 174
+   rad/s. On losing the bat, forget where it was. */
+function loseTrack(why){
+  Bat.ok = false;
+  Diag.batWhy = why;
+  Bat.prevMid = null;
+  Bat.prevTip = null;
+  Bat.prevAng = null;
+}
+
 function updateBat(lm, now, dt){
-  if(!lm){ Bat.ok = false; Diag.batWhy = 'no pose'; return; }
+  if(!lm){ loseTrack('no pose'); return; }
   const lw = lm[L_WRIST], rw = lm[R_WRIST];
   const vis = Math.min(lw.visibility ?? 1, rw.visibility ?? 1);
-  if(vis < 0.35){ Bat.ok = false; Diag.batWhy = 'wrists unsure ' + vis.toFixed(2); return; }
+  if(vis < 0.35){ loseTrack('wrists unsure ' + vis.toFixed(2)); return; }
   // visibility stays high for joints the model is extrapolating past the edge
   // of the image, so a player whose hands are out of shot gets a bat built from
   // a guess that drifts with their torso. Off-frame wrists are not a bat.
-  if(!inFrame(lw) || !inFrame(rw)){
-    Bat.ok = false;
-    Diag.batWhy = 'wrists off-frame';
-    return;
-  }
+  if(!inFrame(lw) || !inFrame(rw)){ loseTrack('wrists off-frame'); return; }
   Diag.batWhy = '';
+
+  // the player's own body is the ruler for where "off" and "on" are
+  const ls = lm[L_SHO], rs = lm[R_SHO];
+  if(ls && rs && inFrame(ls) && inFrame(rs)){
+    const lsw = mapToWorld(1 - ls.x, ls.y), rsw = mapToWorld(1 - rs.x, rs.y);
+    Bat.bodyX = (lsw.x + rsw.x)/2;
+    Bat.shoulderW = Math.max(0.40, Math.abs(lsw.x - rsw.x));
+  }
 
   // mirror x — the player sees themselves, not the camera's view
   const a = mapToWorld(1 - lw.x, lw.y);
@@ -942,27 +961,37 @@ function tryHit(b){
 
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
-const SWING_GAIN  = 1.25;
+const POS_GAIN    = 1.30;   // where you met it, measured against your own shoulders
 const TIMING_GAIN = 1.35;   // timing is what sends it behind square in real cricket
 const BLADE_GAIN  = 0.35;
 const LINE_LIMIT  = 2.60;   // ~149 degrees: third man and fine leg are on the field
 
-function shotLine(dirX, dirY, speed, u, remaining, win){
-  const mag    = Math.hypot(dirX, dirY) || 1;
-  const across = speed > 0.3 ? clamp(dirX / mag, -1, 1) : 0;
-  const timing = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
-  const blade  = clamp((u - 0.74) / 0.42, -1, 1);
+/* WHERE YOU MET IT decides the line.
 
-  // The swing picks the SIDE, timing and contact pick how far round it goes.
-  // Adding the two signed together meant they cancelled: swing to the off but
-  // meet it early and +0.85 - 1.05 came out near straight, which is how ten
-  // deliberate back shots produced two. Swinging across and playing it late are
-  // now both ways of getting finer on the side you chose, never opposites.
-  const side   = Math.abs(across) > 0.15 ? (across > 0 ? 1 : -1)
-                                         : (timing >= 0 ? 1 : -1);   // late is off, early is leg
-  const round  = Math.abs(across)*SWING_GAIN + Math.abs(timing)*TIMING_GAIN + blade*BLADE_GAIN;
-  const angle  = clamp(side * Math.max(round, 0), -LINE_LIMIT, LINE_LIMIT);
-  return { angle, across, timing, blade, side };
+   Bat out towards the off when it meets the ball and the ball goes to the off;
+   kept in front of the body it goes straight; brought round to the legs it goes
+   to the on side. Your own shoulder width is the ruler, so it works wherever you
+   stand and whatever your build.
+
+   Position rather than swing velocity because position is the one thing the
+   camera gives us cleanly. Velocity is a position difference over a 20-30fps
+   pose interval: it saturated at 1.00 on nine balls out of nine, read 174 rad/s
+   of bat spin, and sent everything square to the off however the shot was
+   played. A wrist landmark does not have that problem.
+
+   Timing then decides how fine, on the side the bat already chose — so behind
+   square is wide and late, which is what it is in the middle. */
+
+function shotLine(batX, bodyX, shoulderW, u, remaining, win){
+  const lateral = clamp((batX - bodyX) / Math.max(shoulderW, 0.40), -1, 1);
+  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
+  const blade   = clamp((u - 0.74) / 0.42, -1, 1);
+
+  const side    = Math.abs(lateral) > 0.12 ? (lateral > 0 ? 1 : -1)
+                                           : (timing >= 0 ? 1 : -1);  // late off, early leg
+  const round   = Math.abs(lateral)*POS_GAIN + Math.abs(timing)*TIMING_GAIN + blade*BLADE_GAIN;
+  const angle   = clamp(side * Math.max(round, 0), -LINE_LIMIT, LINE_LIMIT);
+  return { angle, lateral, timing, blade, side };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
@@ -1013,7 +1042,8 @@ function playShot(b, u, remaining){
   // Tilt used to place it, which saturated the moment a player held the stick
   // with their hands level: the axis read horizontal and every ball went square
   // to the same side before the swing even started.
-  const line   = shotLine(Bat.swingDir.x, Bat.swingDir.y, Bat.handSpeed, u, remaining, t.hitMs/2000);
+  const batX   = (Bat.grip.x + Bat.tip.x)/2;        // where the bat was when it met the ball
+  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, t.hitMs/2000);
   const hAngle = line.angle;
 
   // upward swing lofts it
@@ -1048,8 +1078,10 @@ function playShot(b, u, remaining){
 
   G.runs += runs;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
-                 across:line.across, timing:line.timing, blade:line.blade,
+                 lateral:line.lateral, timing:line.timing, blade:line.blade,
+                 across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
+                 tip:Bat.tipSpeed, pow:power, qual:quality,
                  axis:Math.atan2(Bat.axis.x, -Bat.axis.y)*57.2958,   // 0 = bat hanging down
                  gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
@@ -1135,15 +1167,14 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  line across timing  axis  gripY ballY  sep  hand  spin  shot\n' +
+    log.textContent = 'ball  line latrl timing blade  axis   sep   tip  pow qual  shot\n' +
       G.wagon.map((s, i) =>
         String(i+1).padStart(3) + ' ' +
         ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
-        f(s.across,5) + ' ' + f(s.timing,5) + ' ' +
+        f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.blade,5) + ' ' +
         ((s.axis >= 0 ? '+' : '') + s.axis.toFixed(0)).padStart(5) + ' ' +
-        s.gripY.toFixed(2).padStart(6) + s.ballY.toFixed(2).padStart(6) + ' ' +
-        f(s.sep,5) + ' ' + s.hand.toFixed(1).padStart(5) + ' ' +
-        s.spin.toFixed(1).padStart(5) + '  ' + s.shot +
+        f(s.sep,5) + ' ' + s.tip.toFixed(1).padStart(5) + ' ' +
+        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot +
         (Math.abs(s.a*57.3) > 90 ? '  <BEHIND' : '')
       ).join('\n');
   }
