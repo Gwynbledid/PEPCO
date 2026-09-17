@@ -895,10 +895,16 @@ function newDelivery(){
   const t = TIERS[G.tier];
   const T = t.ballMs/1000;
   const targetY = 0.45 + Math.random()*0.95;
-  const targetX = (Math.random()-0.5)*0.9;
+  // Bowled AT the batter. It used to be aimed at world zero while "in front of
+  // your body" was measured from wherever the player stood, so anyone standing
+  // off to one side had every ball arrive on the same side of them — eleven
+  // deliveries in a row came back with a negative offset, and half the field was
+  // unreachable no matter how they played.
+  const aim = Bat.bodyX || 0;
+  const targetX = aim + (Math.random()-0.5)*0.9;
   const y0 = 1.95;
   G.ball = {
-    t:0, T,
+    t:0, T, aim,
     x:0.28, y:y0, z:RELEASE_Z,
     vx:(targetX - 0.28)/T,
     vy:(targetY - y0)/T + 0.5*9.81*T,
@@ -962,6 +968,7 @@ function tryHit(b){
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
 const POS_GAIN    = 1.40;   // where you met it, measured against your own shoulders
+const RISE_REF    = 6.0;   // upward hand speed that counts as a full loft
 const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing behind
 
 /* WHERE YOU MET IT decides the line.
@@ -1009,6 +1016,7 @@ const FOLLOW = {
   'Square drive':   { spin:2.10, lift:0.22, sweep:0.45, dur:640 },
   'Pull':           { spin:3.00, lift:0.26, sweep:0.60, dur:700 },   // flat and wide
   'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
+  'Edge':           { spin:0.35, lift:0.08, sweep:0.10, dur:320 },   // no stroke at all
 };
 
 /* Named from the line and how high it went. Bat spin is not used: it reads tens
@@ -1037,13 +1045,34 @@ function playShot(b, u, remaining){
   // Tilt used to place it, which saturated the moment a player held the stick
   // with their hands level: the axis read horizontal and every ball went square
   // to the same side before the swing even started.
-  const batX   = (Bat.grip.x + Bat.tip.x)/2;        // where the bat was when it met the ball
+  // Measured at the sweet spot, not the bat's midpoint: the middle of a bat sits
+  // 0.22 of its length from centre, so using the midpoint meant middling a ball
+  // at your own body came out 29 degrees to leg instead of straight.
+  const batX   = Bat.grip.x + 0.74 * (Bat.tip.x - Bat.grip.x);
   const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, t.hitMs/2000);
-  const hAngle = line.angle;
 
-  // upward swing lofts it
-  const rise   = clamp(Bat.tipVel.y / 9, -1, 1);
-  const loft   = clamp(0.12 + rise*0.68, 0.04, 0.75);
+  /* An edge is not an aimed shot. Catch the ball off the toe or right down by
+     the splice and it can fly off behind square — past the keeper, or away
+     towards third man — which is the one honest way for a ball to end up behind
+     the wicket now that aimed shots are capped in front of it. */
+  let hAngle = line.angle, edged = false;
+  if(sweet < 0.25 && Math.random() < 0.45){
+    edged = true;
+    hAngle = (Math.random() < 0.5 ? 1 : -1) * (1.75 + Math.random()*0.75);   // 100-145 deg
+  }
+
+  /* Slash down and it stays along the ground; swing up and it lofts. Taken from
+     the hands rather than the bat tip, because the tip adds a 0.9m lever's worth
+     of axis wobble to every reading.
+
+     How well it was timed decides what the loft becomes. Middle an upward swing
+     and it leaves at about 40 degrees and carries. Get the timing wrong and the
+     same swing goes almost straight up, which is a catch, not a six. */
+  const swingUp = Bat.swingDir.y * Bat.handSpeed;          // world units/s, up is positive
+  const rise    = clamp(swingUp / RISE_REF, -1, 1);
+  const loft    = rise <= 0
+    ? clamp(0.05 - rise*0.04, 0.02, 0.12)                  // along the ground
+    : clamp(0.35 + rise*0.35 + (1 - timing)*0.75, 0.15, 1.45);
 
   b.state = 'hit';
   b.vx = speed * Math.cos(loft) * Math.sin(hAngle);
@@ -1058,27 +1087,35 @@ function playShot(b, u, remaining){
   const rollF = clamp(1.6 - loft*2.0, 0.2, 1.6);   // flat shots skid, lofted ones stop dead
   const total = carry + vh * rollF;
 
-  let runs, label, sub;
-  if(carry >= BOUNDARY_R)      { runs=6; label='SIX'; sub='All the way'; }
+  // An upward swing that was badly timed leaves almost vertically and comes down
+  // in a fielder's hands, however hard it was hit.
+  const skied = loft > 1.05 && carry < 30;
+
+  let runs, label, sub, out = false;
+  if(skied)                    { runs=0; out=true; label='CAUGHT'; sub='Skied it, and taken'; }
+  else if(carry >= BOUNDARY_R) { runs=6; label='SIX'; sub='All the way'; }
   else if(total >= BOUNDARY_R) { runs=4; label='FOUR'; sub='Beats the fielder'; }
   else if(total >= 44)         { runs=3; label='3'; sub='Into the deep'; }
   else if(total >= 24)         { runs=2; label='2'; sub='Back for the second'; }
   else if(total >= 14)         { runs=1; label='1'; sub='Pushed into the gap'; }
   else                         { runs=0; label='Dot'; sub= sweet<0.3 ? 'Off the edge' : 'Straight to the fielder'; }
+  if(edged && !out && runs > 0) sub = hAngle > 0 ? 'Edged away to third man' : 'Edged past the keeper';
 
-  const shot = classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
+  const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
   const f = FOLLOW[shot];
   Bat.follow = { t0: performance.now(), dur: f.dur, sign: hAngle >= 0 ? 1 : -1,
                  spin: f.spin, lift: f.lift, sweep: f.sweep };
 
   G.runs += runs;
+  if(out) G.wkts++;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
                  lateral:line.lateral, timing:line.timing, blade:line.blade,
                  across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
                  tip:Bat.tipSpeed, pow:power, qual:quality,
                  axis:Math.atan2(Bat.axis.x, -Bat.axis.y)*57.2958,   // 0 = bat hanging down
-                 gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep });
+                 gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep,
+                 rise, loft, out, edged });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from where ' +
                   line.lateral.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
@@ -1089,7 +1126,7 @@ function playShot(b, u, remaining){
 }
 
 function missed(b){
-  const bowled = Math.abs(b.x) < 0.20 && b.y < 0.78;
+  const bowled = Math.abs(b.x - (b.aim || 0)) < 0.20 && b.y < 0.78;
   if(bowled){
     G.wkts++;
     showCallout('BOWLED', 'Through the gate', '#FF2D7A');
@@ -1162,14 +1199,14 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  line latrl timing blade  axis   sep   tip  pow qual  shot\n' +
+    log.textContent = 'ball  line latrl timing  rise  loft   tip  pow qual  shot\n' +
       G.wagon.map((s, i) =>
         String(i+1).padStart(3) + ' ' +
         ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
-        f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.blade,5) + ' ' +
-        ((s.axis >= 0 ? '+' : '') + s.axis.toFixed(0)).padStart(5) + ' ' +
-        f(s.sep,5) + ' ' + s.tip.toFixed(1).padStart(5) + ' ' +
-        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot
+        f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.rise,5) + ' ' +
+        s.loft.toFixed(2).padStart(5) + ' ' + s.tip.toFixed(1).padStart(5) + ' ' +
+        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot +
+        (s.out ? '  OUT' : '')
       ).join('\n');
   }
 
