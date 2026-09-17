@@ -983,7 +983,11 @@ const LINE_LIMIT  = 2.60;   // ~149 degrees: third man and fine leg are on the f
    square is wide and late, which is what it is in the middle. */
 
 function shotLine(batX, bodyX, shoulderW, u, remaining, win){
-  const lateral = clamp((batX - bodyX) / Math.max(shoulderW, 0.40), -1, 1);
+  // Scaled to 60% of shoulder width: the ball only ever arrives within about
+  // half a shoulder of the body, and the bat centre can only sit half a bat
+  // length from the contact point, so a full shoulder was an extreme nobody
+  // reached. Measured over a real innings the offset ran to 0.67 of a shoulder.
+  const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * 0.60), -1, 1);
   const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // late is positive
   const blade   = clamp((u - 0.74) / 0.42, -1, 1);
 
@@ -1084,8 +1088,8 @@ function playShot(b, u, remaining){
                  tip:Bat.tipSpeed, pow:power, qual:quality,
                  axis:Math.atan2(Bat.axis.x, -Bat.axis.y)*57.2958,   // 0 = bat hanging down
                  gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep });
-  Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from across ' +
-                  line.across.toFixed(2) + ' time ' + line.timing.toFixed(2) +
+  Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from where ' +
+                  line.lateral.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
   Diag.lastShot2 = shot + '  hand ' + Bat.handSpeed.toFixed(1) + '  spin ' +
                    Bat.axisSpin.toFixed(1) + '  sweet ' + sweet.toFixed(2);
