@@ -766,7 +766,9 @@ function loseTrack(why){
   Bat.prevMid = null;
   Bat.prevTip = null;
   Bat.prevAng = null;
-  Bat.hist.length = 0;        // a gap makes every displacement across it a lie
+  // The history is kept. A gap ruins a velocity, but not the direction the hands
+  // travelled — and tracking drops hardest during the fast downswing, which is
+  // exactly the motion that decides whether a shot stays down.
 }
 
 /* How the hands travelled INTO the ball, over the last `ms` of motion.
@@ -778,13 +780,14 @@ function loseTrack(why){
    actually struck. */
 function swingInto(ms){
   const h = Bat.hist;
-  if(h.length < 2) return { x:0, y:0 };
+  if(h.length < 2) return { dx:0, dy:0 };
   const last = h[h.length-1];
   let first = h[0];
   for(let i = h.length-1; i >= 0; i--){ if(last.t - h[i].t >= ms){ first = h[i]; break; } }
-  const dt = (last.t - first.t)/1000;
-  if(dt < 0.02) return { x:0, y:0 };
-  return { x:(last.x - first.x)/dt, y:(last.y - first.y)/dt };
+  // DISPLACEMENT, not velocity. How far the hands travelled and which way, which
+  // needs no frame rate at all — every velocity in this build has misled us at
+  // some point because it divides by a 20-30fps pose interval.
+  return { dx: last.x - first.x, dy: last.y - first.y };
 }
 
 function updateBat(lm, now, dt){
@@ -990,7 +993,7 @@ function tryHit(b){
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
 const POS_GAIN    = 1.40;   // where you met it, measured against your own shoulders
-const RISE_REF    = 6.0;   // upward hand speed that counts as a full loft
+const RISE_SPAN   = 0.35;  // how far the hands must travel up, or down, for a full loft
 const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing behind
 
 /* WHERE YOU MET IT decides the line.
@@ -1093,11 +1096,15 @@ function playShot(b, u, remaining){
      How well it was timed decides what the loft becomes. Middle an upward swing
      and it leaves at about 40 degrees and carries. Get the timing wrong and the
      same swing goes almost straight up, which is a catch, not a six. */
-  const into    = swingInto(140);                           // the travel into the ball
-  const rise    = clamp(into.y / RISE_REF, -1, 1);          // up is positive
+  const into    = swingInto(220);                           // the travel into the ball
+  const rise    = clamp(into.dy / RISE_SPAN, -1, 1);        // up is positive
+  /* Continuous through zero, so a level swing is a flat shot rather than jumping
+     straight to a loft. Hands down keeps it along the ground; hands up lofts it
+     in proportion to how far they rose, and mistiming steepens that into a
+     skier. */
   const loft    = rise <= 0
-    ? clamp(0.05 - rise*0.04, 0.02, 0.12)                  // along the ground
-    : clamp(0.35 + rise*0.35 + (1 - timing)*0.75, 0.15, 1.45);
+    ? clamp(0.06 - rise*0.05, 0.02, 0.12)                  // along the ground
+    : clamp(0.06 + rise*(0.55 + 0.75*(1 - timing)), 0.04, 1.45);
 
   b.state = 'hit';
   b.vx = speed * Math.cos(loft) * Math.sin(hAngle);
