@@ -1189,19 +1189,27 @@ function updateBat(lm, now, dt){
   // mirror x — the player sees themselves, not the camera's view
   const a = stance(mapToWorld(1 - lw.x, lw.y));
   const b = stance(mapToWorld(1 - rw.x, rw.y));
-  // Higher hand is the top hand — but when the wrists are level "higher" is noise,
-  // and every flicker swaps the bat end for end. Measured on a real innings that
-  // showed up as 18 to 74 rad/s of phantom bat spin, enough to classify seven
-  // shots out of ten as a helicopter. Below a clear separation, keep the last
-  // assignment instead of letting noise decide.
+  /* WHICH HAND IS AT THE TOP OF THE HANDLE.
+
+     This used to be "whichever wrist is higher", falling back to the last
+     assignment when they were level. That is fine for a vertical bat and useless
+     for a horizontal one — and a pull is played with a horizontal bat and level
+     wrists. Over an over of pulls the fallback flipped the bat end for end
+     between deliveries, which swung the measured contact point 1.3m across the
+     body: latrl came back -1.00 on one ball and +0.95 on the next, on shots
+     played identically.
+
+     Handedness settles it outright. A right-hander's top hand is their left, a
+     left-hander's is their right, and that never changes during an innings. The
+     wrist heights are now only a sanity check for the debug panel. */
   const sep = a.y - b.y;
-  const aIsTop = Math.abs(sep) > 0.12 ? sep > 0
-               : (Bat.aWasTop === null ? sep > 0 : Bat.aWasTop);
+  const aIsTop = HAND > 0;               // a is lm15, the player's left wrist
   Bat.aWasTop = aIsTop;
   Bat.sep = sep;                         // vertical gap between the wrists, world units
   const top = aIsTop ? a : b;
   const bot = aIsTop ? b : a;
-  Diag.topHand = aIsTop ? 'lm15 left wrist' : 'lm16 right wrist';
+  Diag.topHand = (aIsTop ? 'left wrist' : 'right wrist') +
+                 (Math.abs(sep) > 0.12 && (sep > 0) !== aIsTop ? ' (hands crossed?)' : '');
 
   let ax = bot.x - top.x, ay = bot.y - top.y;
   const len = Math.hypot(ax, ay);
@@ -1467,6 +1475,7 @@ function tryHit(b){
    A bat that is barely moving places nothing, so a nudge plays straight. */
 
 const POS_GAIN    = 1.40;   // where you met it, measured against your own shoulders
+const POS_SPAN    = 0.46;   // how far the hands travel, in shoulder spans, for a full line
 const RISE_SPAN   = 0.35;  // how far the hands must travel up, or down, for a full loft
 const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing behind
 
@@ -1489,16 +1498,50 @@ const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing b
    straight could arrive anywhere. They belong to how WELL it was struck, not to
    where it went. Nothing goes behind square now: the line caps at 80 degrees. */
 
-function shotLine(batX, bodyX, shoulderW, u, remaining, win){
+/* HOW A CROSS-BATTED STROKE IS PLACED — which is not how a drive is.
+
+   A drive goes through the line of the ball: the hands are behind it, the bat is
+   vertical, and where you met it is a real, stable thing to measure. A pull is
+   not like that at all. The bat comes round FLAT, so the blade covers nearly a
+   metre of the crease, and the hands cross that metre in about a tenth of a
+   second — which is one pose sample. Measured on 40 identical pulls, the hands'
+   position at the instant contact was recorded landed anywhere in that metre, so
+   latrl came back +1.00 on some and -1.00 on others and the same stroke was
+   called a square drive, a cut, an edge and a pull.
+
+   Position is simply not the signal for a cross-batted shot. The DIRECTION the
+   hands are travelling is: sweep to leg and the ball goes to leg, every time.
+   That is a displacement over 220ms — the measure that has stayed honest through
+   this whole build — rather than one sampled position.
+
+   How square it goes then comes from timing, which is what decides it with a bat
+   in your hands: take it early and it goes squarer, later and it comes off
+   straighter.
+
+   The two are blended by how cross-batted the swing actually was, so there is no
+   cliff between a drive and a pull; a half-cross whip off the hip lands between
+   the two. */
+function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
   // Scaled to 60% of shoulder width: the ball only ever arrives within about
   // half a shoulder of the body, and the bat centre can only sit half a bat
   // length from the contact point, so a full shoulder was an extreme nobody
   // reached. Measured over a real innings the offset ran to 0.67 of a shoulder.
-  const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * 0.60), -1, 1);
-  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // logged, not steering
+  const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * POS_SPAN), -1, 1);
+  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;
   const blade   = clamp((u - 0.74) / 0.42, -1, 1);                // logged, not steering
-  const angle   = clamp(lateral * POS_GAIN, -LINE_LIMIT, LINE_LIMIT);
-  return { angle, lateral, timing, blade };
+
+  // how cross-batted: hands going sideways rather than through, far enough to
+  // mean it, and at a height you can actually swing flat at
+  const ax = Math.abs(into.dx), ay = Math.abs(into.dy);
+  const cross = clamp((ax - ay)/0.22, 0, 1) *
+                clamp((ax - 0.10)/0.12, 0, 1) *
+                clamp((ht - 0.62)/0.18, 0, 1);
+
+  const early      = clamp(-timing, 0, 1);                        // met before it arrived
+  const posAngle   = lateral * POS_GAIN;                          // a drive: where you met it
+  const crossAngle = Math.sign(into.dx || 1) * lerp(0.70, LINE_LIMIT, early);
+  const angle = clamp(lerp(posAngle, crossAngle, cross), -LINE_LIMIT, LINE_LIMIT);
+  return { angle, lateral, timing, blade, cross };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
@@ -1513,7 +1556,14 @@ const FOLLOW = {
   'Cover drive':    { spin:2.20, lift:0.58, sweep:0.46, dur:790 },
   'On drive':       { spin:2.05, lift:0.55, sweep:0.44, dur:790 },
   'Square drive':   { spin:2.90, lift:0.28, sweep:0.68, dur:780 },
-  'Pull':           { spin:3.90, lift:0.34, sweep:0.90, dur:830 },   // flat and wide
+  /* A pull is not a drive with more sweep on it. The bat comes round flat at
+     about the height the ball arrived, carries on across the body, and finishes
+     high behind the front shoulder — so it wants most of a half-turn of rotation,
+     a long way sideways, and the lift arriving LATE rather than with the sweep.
+     A cut is the same shape, shorter and squarer, on the other side. */
+  'Pull':           { spin:4.60, lift:0.62, sweep:1.25, dur:900, flat:0.72, lateLift:true },
+  'Cut':            { spin:3.60, lift:0.30, sweep:1.00, dur:780, flat:0.80, lateLift:true },
+  'Flick':          { spin:2.60, lift:0.50, sweep:0.62, dur:760 },   // wristy, bat still up
   'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
   'Edge':           { spin:0.35, lift:0.08, sweep:0.10, dur:320 },   // no stroke at all
 };
@@ -1521,14 +1571,17 @@ const FOLLOW = {
 /* Named from the line and how high it went. Bat spin is not used: it reads tens
    of rad/s off a hand-to-hand axis that is barely separated, which named seven
    shots in ten a helicopter. */
-function classifyShot(line, speed, spin, loft){
+function classifyShot(line, speed, spin, loft, cross){
   if(speed < 1.2) return 'Defensive push';
   const deg = line.angle * 57.2958;
   const a   = Math.abs(deg);
   const off = deg * HAND >= 0;                 // +x is the off side for a right-hander
+  if(cross && a >= 26) return off ? 'Cut' : 'Pull';
   if(a < 22) return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
   if(a < 55) return off ? 'Cover drive' : 'On drive';
-  return off ? 'Square drive' : 'Pull';
+  // square off a VERTICAL bat is not a pull — a pull is cross-batted, and the
+  // stroke now knows which it was
+  return off ? 'Square drive' : 'Flick';
 }
 
 function playShot(b, u, remaining){
@@ -1537,28 +1590,55 @@ function playShot(b, u, remaining){
   const power  = clamp(Bat.tipSpeed / 12, 0, 1);
   const timing = 1 - clamp(Math.abs(remaining) / hitWindow(), 0, 1);
   const sweet  = 1 - clamp(Math.abs(u - 0.74) / 0.42, 0, 1);
-  const quality = 0.22 + 0.78 * (0.42*timing + 0.58*sweet);
+
+  /* WHERE YOU MET IT — read off the hands, not off a point on the blade.
+
+     The sweet spot sits 0.67m down the bat from the top hand. With the bat
+     vertical that is almost all height and barely any sideways, so it made a fine
+     reference. With the bat HORIZONTAL, which is what a pull is, that 0.67m is
+     entirely sideways: the blade reaches right across the body and the reference
+     point ends up on the opposite side of the player from their hands. An over
+     of pulls came back as three edges, three lofted drives and a square drive,
+     with nothing named a pull at all.
+
+     The wrist midpoint is where the player actually is. It does not move when
+     the bat turns, so it means the same thing whatever stroke is being played,
+     and it is the one point on the bat the camera sees directly. The bat's own
+     reach is added back at a quarter weight, so stretching out to a wide one
+     still counts for something without the blade's orientation dominating. */
+  const hands  = Bat.mid || { x: Bat.grip.x, y: Bat.grip.y };
+  const blade  = Bat.grip.x + 0.74 * (Bat.tip.x - Bat.grip.x);
+  const batX   = hands.x + 0.25 * (blade - hands.x);
+  // how the hands travelled into the ball — this now decides the line of a
+  // cross-batted stroke as well as how high the ball goes
+  const into   = swingInto(220);
+  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, hitWindow(), into, b.y);
+
+  /* HOW WELL IT WAS STRUCK.
+
+     Where the ball met the blade judges a drive: the bat is vertical, it passes
+     through the line once, and the toe and the splice are genuinely worse places
+     to hit it than the middle. It judges a pull at random. The blade is flat and
+     crossing the crease at nine metres a second, so which centimetre of it the
+     contact test happened to record is noise — on 40 identical pulls it put 21 of
+     them down as edges.
+
+     The ball's clock has no such problem. The further a stroke is from a drive,
+     the more of the verdict timing takes, until for a flat-batted pull it is
+     almost all of it. */
+  const strike  = lerp(sweet, timing, line.cross);
+  const quality = 0.22 + 0.78 * (0.42*timing + 0.58*strike);
   // Range set so a well struck lofted shot can reach the rope: at 7 + 21 a hard,
   // well timed shot carried 29 of the 62 it needed, so going aerial was a pure
   // risk with nothing on the other side of it.
-  const speed  = (8 + power*26) * quality;
-
-  // Where the shot goes is decided by how you swung, not how you were standing.
-  // Tilt used to place it, which saturated the moment a player held the stick
-  // with their hands level: the axis read horizontal and every ball went square
-  // to the same side before the swing even started.
-  // Measured at the sweet spot, not the bat's midpoint: the middle of a bat sits
-  // 0.22 of its length from centre, so using the midpoint meant middling a ball
-  // at your own body came out 29 degrees to leg instead of straight.
-  const batX   = Bat.grip.x + 0.74 * (Bat.tip.x - Bat.grip.x);
-  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, hitWindow());
+  const speed   = (8 + power*26) * quality;
 
   /* An edge is not an aimed shot. Catch the ball off the toe or right down by
      the splice and it can fly off behind square — past the keeper, or away
      towards third man — which is the one honest way for a ball to end up behind
      the wicket now that aimed shots are capped in front of it. */
   let hAngle = line.angle, edged = false;
-  if(sweet < 0.25 && Math.random() < 0.45){
+  if(strike < 0.25 && Math.random() < 0.45){
     edged = true;
     hAngle = (Math.random() < 0.5 ? 1 : -1) * (1.75 + Math.random()*0.75);   // 100-145 deg
   }
@@ -1570,7 +1650,6 @@ function playShot(b, u, remaining){
      How well it was timed decides what the loft becomes. Middle an upward swing
      and it leaves at about 40 degrees and carries. Get the timing wrong and the
      same swing goes almost straight up, which is a catch, not a six. */
-  const into    = swingInto(220);                           // the travel into the ball
   const rise    = clamp(into.dy / RISE_SPAN, -1, 1);        // up is positive
   /* Continuous through zero, so a level swing is a flat shot rather than jumping
      straight to a loft. Hands down keeps it along the ground; hands up lofts it
@@ -1670,11 +1749,13 @@ function playShot(b, u, remaining){
   G.fieldUntil = c.t0 + c.waitMs + c.outMs + c.gatherMs +
                  (c.throwMs ? c.throwMs + THROW_FLIGHT_MS : 0) + SETTLE_MS + RUNUP_MS;
 
-  const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
+  const shot  = edged ? 'Edge'
+              : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft, line.cross > 0.5);
   const f = FOLLOW[shot];
   // snapshot the bat where it actually met the ball — the arc runs from here
   Bat.follow = { t0: performance.now(), dur: f.dur, sign: hAngle >= 0 ? 1 : -1,
                  spin: f.spin, lift: f.lift, sweep: f.sweep,
+                 flat: f.flat || 0, lateLift: !!f.lateLift,
                  x: (Bat.grip.x + Bat.tip.x)/2, y: (Bat.grip.y + Bat.tip.y)/2,
                  ang: Math.atan2(Bat.axis.x, -Bat.axis.y) };
 
@@ -1687,7 +1768,7 @@ function playShot(b, u, remaining){
   if(out) G.wkts++;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
                  len:-(b.pitchZ || 0), win:hitWindow(),
-                 lateral:line.lateral, timing:line.timing, blade:line.blade,
+                 lateral:line.lateral, timing:line.timing, blade:line.blade, cross:line.cross,
                  across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
                  tip:Bat.tipSpeed, pow:power, qual:quality,
@@ -1697,8 +1778,8 @@ function playShot(b, u, remaining){
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from where ' +
                   line.lateral.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
-  Diag.lastShot2 = shot + '  hand ' + Bat.handSpeed.toFixed(1) + '  spin ' +
-                   Bat.axisSpin.toFixed(1) + '  sweet ' + sweet.toFixed(2);
+  Diag.lastShot2 = shot + '  hand ' + Bat.handSpeed.toFixed(1) + '  cross ' +
+                   line.cross.toFixed(2) + '  strike ' + strike.toFixed(2);
   showCallout(label, shot + ' \u00b7 ' + sub, runs>=4 ? '#FFB020' : '#F2F6F4');
   endBall();
 }
@@ -1791,7 +1872,7 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  len   ht  line latrl timing  rise  loft  apex carry  shot\n' +
+    log.textContent = 'ball  len   ht  line latrl timing cross  rise  loft  apex carry  shot\n' +
       G.wagon.map((s, i) => {
         const head = String(i+1).padStart(3) + ' ' +
                      s.len.toFixed(1).padStart(4) + ' ' + s.ballY.toFixed(2).padStart(5) + ' ';
@@ -1800,7 +1881,7 @@ function drawWagon(){
           const p = s.probe;
           const off = p ? (-p.remaining/s.win) : null;
           return head + '  -     -  ' + (off === null ? '   -' : f(off,5)) +
-                 '      -     -     -     -  ' +
+                 '     -     -     -     -     -  ' +
                  (s.bowled ? 'BOWLED' : 'MISSED') +
                  (p ? '  bat ' + p.d.toFixed(2) + 'm away, blade ' +
                       p.low.toFixed(2) + '-' + p.high.toFixed(2)
@@ -1808,7 +1889,9 @@ function drawWagon(){
         }
         return head +
           ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
-          f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.rise,5) + ' ' +
+          f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' +
+          (s.cross === undefined ? '    -' : s.cross.toFixed(2).padStart(5)) + ' ' +
+          f(s.rise,5) + ' ' +
           s.loft.toFixed(2).padStart(5) + ' ' + s.apex.toFixed(1).padStart(5) + ' ' +
           s.carry.toFixed(0).padStart(5) + '  ' + s.shot +
           (s.runs === 6 ? '  SIX ' + Math.round(s.carry) + 'm' : '') +
@@ -1981,9 +2064,15 @@ function loop(now){
         const e = k < 0.30 ? 1 - Math.pow(1 - k/0.30, 2)
                            : 1 - Math.pow((k - 0.30)/0.70, 2);
         const back = clamp((k - 0.55)/0.45, 0, 1);     // handing it back to the hands
-        bat.rotation.z = lerp(f.ang + f.spin *f.sign*e, bat.rotation.z, back);
+        /* A cross-batted stroke starts FLAT and lifts LATE. The bat comes round
+           horizontal at about the height the ball arrived, carries across the
+           body, and only then climbs behind the front shoulder. Driving the lift
+           off the same curve as the sweep made a pull look like a scoop. */
+        const liftE = f.lateLift ? Math.pow(clamp((k - 0.10)/0.55, 0, 1), 0.7) : e;
+        const ang0  = f.flat ? lerp(f.ang, -f.sign*Math.PI/2, f.flat) : f.ang;
+        bat.rotation.z = lerp(ang0  + f.spin *f.sign*e, bat.rotation.z, back);
         bat.position.x = lerp(f.x   + f.sweep*f.sign*e, bat.position.x, back);
-        bat.position.y = lerp(f.y   + f.lift *e,        bat.position.y, back);
+        bat.position.y = lerp(f.y   + f.lift *liftE,    bat.position.y, back);
       }
     }
     puck.position.x = bat.position.x;
