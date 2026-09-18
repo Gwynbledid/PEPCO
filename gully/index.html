@@ -905,6 +905,41 @@ for(let i=0;i<MARKS;i++){
   scene.add(m); marks.push(m);
 }
 let markN = 0;
+
+/* WHERE IT IS GOING TO PITCH, before it does.
+
+   Length is the whole of what a batter reads, and on a phone at 20-30fps there
+   is not enough of the ball's flight to read it from: three of your misses last
+   over were on the three fullest deliveries, each one a stroke already committed
+   before the ball had landed.
+
+   So the pitch is marked, from the moment it leaves the hand. Where the ring sits
+   IS the length — close to you is full, away up the pitch is short — and it
+   closes in as the ball falls towards it, so the last thing that happens before
+   the bounce is the ring reaching its size. No text, nothing on the HUD.
+
+   The colour says which stroke the ball is asking for, on one axis the game
+   already understands: cool for a ball to be driven, amber for one to be pulled.
+   That is the same number that decides whether the stroke you play suits the
+   ball, so what you see and what you are scored against cannot drift apart. */
+/* Cyan for a ball to be driven, orange for one to be pulled, and the blend runs
+   through HSL rather than RGB — straight down the middle in RGB the two meet at
+   a beige that is almost exactly the colour of the pitch, so a good length, the
+   one you most need to read, was the one you could not see. Through HSL it
+   passes green and yellow and stays bright the whole way. */
+const DRIVE_COL = new THREE.Color(0x4FC9FF);
+const PULL_COL  = new THREE.Color(0xFF8A1E);
+const markMat2 = new THREE.MeshBasicMaterial({ color:0xFFFFFF, transparent:true, opacity:0,
+                                               side:THREE.DoubleSide });
+const pitchRing = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.33, 24), markMat2);
+pitchRing.rotation.x = -Math.PI/2;
+pitchRing.position.y = 0.02;
+pitchRing.visible = false;
+scene.add(pitchRing);
+
+/* WHAT THE LENGTH IS ASKING FOR, as one number: 0 a ball to drive, 1 a ball to
+   pull. Continuous, because a good length is genuinely both. */
+const wantCross = len => clamp((len - 4.7)/2.0, 0, 1);
 function pitchMark(x, z){
   const m = marks[markN++ % MARKS];
   m.position.x = x; m.position.z = z;
@@ -1357,6 +1392,7 @@ function newDelivery(){
     vyUp: (targetY - BALL_R)/t2 + 0.5*g*t2,       // solved back from where it has to arrive
     bounced: false,
     pitchZ, short,
+    pitchX: 0.28 + ((targetX - 0.28)/T) * t1,     // where the mark goes
   };
   trailBuf.length = 0;
 }
@@ -1530,18 +1566,28 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
   const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;
   const blade   = clamp((u - 0.74) / 0.42, -1, 1);                // logged, not steering
 
-  // how cross-batted: hands going sideways rather than through, far enough to
-  // mean it, and at a height you can actually swing flat at
+  /* Two measures, not one.
+
+     FLAT is the stroke you played: hands going sideways rather than through, far
+     enough to mean it. CROSS is how much that stroke actually behaves
+     cross-batted, which also needs a ball high enough to swing flat at — you
+     cannot pull a half-volley, and a horizontal swipe at one is a drag, not a
+     pull.
+
+     The line is placed by CROSS, because that is about the geometry of the
+     contact. Whether the stroke suited the ball is judged on FLAT, because that
+     is about what the player chose to do. Using the gated number for both meant
+     a flat swing at a full ball scored as a near-perfect choice: it read as
+     barely cross-batted, and barely cross-batted is what a full ball wants. */
   const ax = Math.abs(into.dx), ay = Math.abs(into.dy);
-  const cross = clamp((ax - ay)/0.22, 0, 1) *
-                clamp((ax - 0.10)/0.12, 0, 1) *
-                clamp((ht - 0.62)/0.18, 0, 1);
+  const flat  = clamp((ax - ay)/0.22, 0, 1) * clamp((ax - 0.10)/0.12, 0, 1);
+  const cross = flat * clamp((ht - 0.62)/0.18, 0, 1);
 
   const early      = clamp(-timing, 0, 1);                        // met before it arrived
   const posAngle   = lateral * POS_GAIN;                          // a drive: where you met it
   const crossAngle = Math.sign(into.dx || 1) * lerp(0.70, LINE_LIMIT, early);
   const angle = clamp(lerp(posAngle, crossAngle, cross), -LINE_LIMIT, LINE_LIMIT);
-  return { angle, lateral, timing, blade, cross };
+  return { angle, lateral, timing, blade, cross, flat };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
@@ -1626,12 +1672,28 @@ function playShot(b, u, remaining){
      The ball's clock has no such problem. The further a stroke is from a drive,
      the more of the verdict timing takes, until for a flat-batted pull it is
      almost all of it. */
-  const strike  = lerp(sweet, timing, line.cross);
+  const strikeRaw = lerp(sweet, timing, line.cross);
+
+  /* THE RIGHT STROKE FOR THE LENGTH.
+
+     A full ball driven goes for four. A full ball pulled is a leading edge. A
+     short ball cut or pulled is four; a short ball driven is a top edge to the
+     keeper. Until now the length and the stroke were computed independently and
+     never compared, so the game paid you exactly the same for the right shot and
+     the wrong one — which left nothing to read the pitch mark FOR.
+
+     Both sides of the comparison already exist as one continuous number: what the
+     length is asking for, and how cross-batted the stroke actually was. The mark
+     on the pitch is coloured off the first of them, so what you see and what you
+     are scored against are the same quantity. */
+  const want  = wantCross(-(b.pitchZ || 0));
+  const fit   = 1 - Math.abs(line.flat - want);      // 1 the right ball for it, 0 the wrong one
+  const strike  = strikeRaw * lerp(0.74, 1.0, fit);  // the wrong stroke mishits more
   const quality = 0.22 + 0.78 * (0.42*timing + 0.58*strike);
   // Range set so a well struck lofted shot can reach the rope: at 7 + 21 a hard,
   // well timed shot carried 29 of the 62 it needed, so going aerial was a pure
   // risk with nothing on the other side of it.
-  const speed   = (8 + power*26) * quality;
+  const speed   = (8 + power*26) * quality * lerp(0.66, 1.16, fit);
 
   /* An edge is not an aimed shot. Catch the ball off the toe or right down by
      the splice and it can fly off behind square — past the keeper, or away
@@ -1669,8 +1731,19 @@ function playShot(b, u, remaining){
   const vh = Math.hypot(b.vx, b.vz);
   const flight = (b.vy + Math.sqrt(b.vy*b.vy + 2*g*Math.max(b.y,0.1))) / g;
   const carry = vh * flight;
-  const rollF = clamp(1.6 - loft*2.0, 0.2, 1.6);   // flat shots skid, lofted ones stop dead
-  const total = carry + vh * rollF;
+  /* HOW FAR IT RUNS, as a deceleration rather than a multiple of the speed.
+
+     At 1.6 x the speed, a well timed drive along the ground totalled about 40 of
+     the 62 it needed, so the only route to a boundary was through the air — the
+     opposite of cricket, where most fours are hit along the carpet. Raising the
+     multiple fixed that and broke something else: a linear roll pays a scuffed
+     shot almost as well as a middled one, so everything flat became a four.
+
+     Grass takes energy at a roughly constant rate, so a ball struck twice as hard
+     runs FOUR times as far. That is what makes timing worth having. A lofted ball
+     lands steeply and stops. */
+  const decel = 3.4 + loft*16;                     // metres per second squared
+  const total = carry + (vh*vh)/(2*decel);
   const apex  = b.y + (b.vy*b.vy)/(2*g);           // how high it actually got
 
   /* WHO IS ACTUALLY THERE.
@@ -1769,6 +1842,7 @@ function playShot(b, u, remaining){
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
                  len:-(b.pitchZ || 0), win:hitWindow(),
                  lateral:line.lateral, timing:line.timing, blade:line.blade, cross:line.cross,
+                 fit,
                  across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
                  tip:Bat.tipSpeed, pow:power, qual:quality,
@@ -1778,9 +1852,12 @@ function playShot(b, u, remaining){
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from where ' +
                   line.lateral.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
-  Diag.lastShot2 = shot + '  hand ' + Bat.handSpeed.toFixed(1) + '  cross ' +
-                   line.cross.toFixed(2) + '  strike ' + strike.toFixed(2);
-  showCallout(label, shot + ' \u00b7 ' + sub, runs>=4 ? '#FFB020' : '#F2F6F4');
+  Diag.lastShot2 = shot + '  cross ' + line.cross.toFixed(2) + '  wanted ' + want.toFixed(2) +
+                   '  fit ' + fit.toFixed(2) + '  strike ' + strike.toFixed(2);
+  const verdict = fit > 0.78 ? ' \u00b7 right ball for it'
+                : fit < 0.34 ? ' \u00b7 wrong ball for that'
+                : '';
+  showCallout(label, shot + verdict + ' \u00b7 ' + sub, runs>=4 ? '#FFB020' : '#F2F6F4');
   endBall();
 }
 
@@ -1872,7 +1949,7 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  len   ht  line latrl timing cross  rise  loft  apex carry  shot\n' +
+    log.textContent = 'ball  len   ht  line latrl timing cross   fit  rise  loft  apex carry  shot\n' +
       G.wagon.map((s, i) => {
         const head = String(i+1).padStart(3) + ' ' +
                      s.len.toFixed(1).padStart(4) + ' ' + s.ballY.toFixed(2).padStart(5) + ' ';
@@ -1881,7 +1958,7 @@ function drawWagon(){
           const p = s.probe;
           const off = p ? (-p.remaining/s.win) : null;
           return head + '  -     -  ' + (off === null ? '   -' : f(off,5)) +
-                 '     -     -     -     -     -  ' +
+                 '     -     -     -     -     -     -  ' +
                  (s.bowled ? 'BOWLED' : 'MISSED') +
                  (p ? '  bat ' + p.d.toFixed(2) + 'm away, blade ' +
                       p.low.toFixed(2) + '-' + p.high.toFixed(2)
@@ -1891,6 +1968,7 @@ function drawWagon(){
           ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
           f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' +
           (s.cross === undefined ? '    -' : s.cross.toFixed(2).padStart(5)) + ' ' +
+          (s.fit   === undefined ? '    -' : s.fit.toFixed(2).padStart(5)) + ' ' +
           f(s.rise,5) + ' ' +
           s.loft.toFixed(2).padStart(5) + ' ' + s.apex.toFixed(1).padStart(5) + ' ' +
           s.carry.toFixed(0).padStart(5) + '  ' + s.shot +
@@ -2113,6 +2191,19 @@ function loop(now){
   }else{
     ball.visible = trail.visible = false;
   }
+
+  /* the mark on the pitch, closing as the ball falls towards it */
+  const inc = G.ball && G.ball.state === 'incoming' && !G.ball.bounced;
+  if(inc){
+    const k = clamp(G.ball.t / Math.max(G.ball.bounceAt, 1e-3), 0, 1);
+    pitchRing.visible = true;
+    pitchRing.position.x = G.ball.pitchX;
+    pitchRing.position.z = G.ball.pitchZ;
+    const sc = lerp(2.4, 1.0, k*k);
+    pitchRing.scale.set(sc, sc, 1);
+    markMat2.opacity = 0.18 + 0.52*k;
+    markMat2.color.copy(DRIVE_COL).lerpHSL(PULL_COL, wantCross(-G.ball.pitchZ));
+  }else pitchRing.visible = false;
 
   /* the tracker, counting with the ball */
   const tr = $('tracker');
