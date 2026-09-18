@@ -506,6 +506,7 @@ scene.fog    = new THREE.Fog(0xA8C6D8, 70, 190);
 const EYE_BACK = 0.95, EYE_HEIGHT = 1.66;
 const CAM_DEAD = 0.30;    // how far the player may drift before the view follows
 let   camAim   = 0;
+const look = new THREE.Vector3(0, 1.05, -16);   // where the batter is looking
 const camera = new THREE.PerspectiveCamera(74, 1, 0.05, 260);
 camera.position.set(0, EYE_HEIGHT, EYE_BACK);
 camera.lookAt(0, 1.05, -16);
@@ -710,6 +711,7 @@ function throwBack(x, z){
 // nobody is left mid-dive from the last innings
 function resetField(){
   ret = null; retBall.visible = false;
+  for(const m of marks){ m.visible = false; m.material.opacity = 0; }
   for(const f of fielders){
     f.userData.chase = null;
     f.position.set(f.userData.home.x, 0, f.userData.home.z);
@@ -724,10 +726,66 @@ function runFrame(mesh, t){
 }
 
 // bat
-const batMat = new THREE.MeshLambertMaterial({ color:0xD8B888 });
-const bat = new THREE.Mesh(new THREE.BoxGeometry(BAT_HALF_W*2, BAT_LEN, 0.035), batMat);
+/* A bat, not a plank. Blade, shoulders, spine and a bound handle, built as a
+   group so everything that drove the old single box — position, rotation.z,
+   visible — still drives this. Local +y is the handle end and -y the toe, which
+   is the convention rotation.z already assumed. Six boxes and two cylinders: at
+   this distance the silhouette is the whole job, and it is the one object on
+   screen the player looks at every frame. */
+const batMat  = new THREE.MeshLambertMaterial({ color:0xD8B888 });               // willow, takes the sponsor
+const gripMat = new THREE.MeshLambertMaterial({ color:0x1B1F23 });               // rubber
+const caneMat = new THREE.MeshLambertMaterial({ color:0xC9A87A });
+const bat = new THREE.Group();
+(function buildBat(){
+  const W = BAT_HALF_W*2, D = 0.044;
+  const half = BAT_LEN/2;                                   // 0.45
+  const part = (geo, mat, y, z) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(0, y, z || 0);
+    bat.add(m);
+    return m;
+  };
+  // blade: toe at -0.45 up to the shoulders at +0.09
+  part(new THREE.BoxGeometry(W, 0.54, D), batMat, -half + 0.27);
+  // the swell down the back — a bat is not a flat board, and the edge-on
+  // silhouette is what sells that
+  part(new THREE.BoxGeometry(W*0.55, 0.42, D*0.55), batMat, -half + 0.23, -D*0.62);
+  // shoulders, narrowing into the splice
+  part(new THREE.BoxGeometry(W*0.72, 0.09, D*0.85), batMat, -half + 0.585);
+  part(new THREE.BoxGeometry(W*0.44, 0.07, D*0.70), caneMat, -half + 0.665);
+  // handle, then the grip over the top of it
+  part(new THREE.CylinderGeometry(0.0165, 0.0175, 0.30, 8), caneMat, -half + 0.84);
+  part(new THREE.CylinderGeometry(0.0215, 0.0205, 0.235, 8), gripMat, -half + 0.815);
+  part(new THREE.CylinderGeometry(0.0235, 0.0235, 0.018, 8), gripMat, -half + 0.925);
+})();
 bat.visible = false;
 scene.add(bat);
+
+/* A scuff where it pitched. Without it the bounce is invisible: the ball is a
+   few pixels 12 metres away and the eye has nothing to hang the length on. Eight
+   marks recycled round a ring, oldest fading out. */
+const MARKS = 8;
+const markMat = new THREE.MeshBasicMaterial({ color:0x6B5637, transparent:true, opacity:0 });
+const marks = [];
+for(let i=0;i<MARKS;i++){
+  const m = new THREE.Mesh(new THREE.CircleGeometry(0.16, 10), markMat.clone());
+  m.rotation.x = -Math.PI/2; m.position.y = 0.012; m.visible = false;
+  scene.add(m); marks.push(m);
+}
+let markN = 0;
+function pitchMark(x, z){
+  const m = marks[markN++ % MARKS];
+  m.position.x = x; m.position.z = z;
+  m.visible = true;
+  m.material.opacity = 0.55;
+}
+function fadeMarks(dt){
+  for(const m of marks){
+    if(!m.visible) continue;
+    m.material.opacity -= dt*0.10;
+    if(m.material.opacity <= 0){ m.visible = false; m.material.opacity = 0; }
+  }
+}
 
 // shadow puck under the bat, sells the position
 const puck = new THREE.Mesh(new THREE.CircleGeometry(0.4,20), new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.22}));
@@ -1098,10 +1156,25 @@ const G = {
   lastLm:null,
 };
 
+/* A DELIVERY THAT PITCHES.
+
+   Every ball used to be a full toss: one parabola from the hand to the hitting
+   plane, so it only ever dropped. A real ball arrives having bounced, and where
+   it bounces is the whole of what a batter reads.
+
+   Two arcs sharing one constant vz. The first drops from the hand to the deck at
+   the length, the second is solved backwards from the height the ball has to be
+   at when it reaches you — so the rebound always presents the ball at a playable
+   height rather than whatever a fixed coefficient of restitution happened to
+   give. Length and that height are tied together: pitch it up and it comes
+   through low, drop it short and it sits up. */
 function newDelivery(){
   const t = TIERS[G.tier];
   const T = t.ballMs/1000;
-  const targetY = 0.45 + Math.random()*0.95;
+  const full   = 0.62 + Math.random()*0.26;      // 0.62 short, 0.88 full — share of the way down
+  const pitchZ = RELEASE_Z + (HIT_PLANE_Z - RELEASE_Z) * full;
+  const short  = (0.88 - full)/0.26;             // 0 pitched up, 1 banged in
+  const targetY = clamp(lerp(0.42, 1.42, short) + (Math.random()-0.5)*0.24, 0.30, 1.60);
   // Bowled AT the batter. It used to be aimed at world zero while "in front of
   // your body" was measured from wherever the player stood, so anyone standing
   // off to one side had every ball arrive on the same side of them — eleven
@@ -1110,14 +1183,21 @@ function newDelivery(){
   const aim = Bat.bodyX || 0;
   const targetX = aim + (Math.random()-0.5)*0.9;
   const y0 = 1.95;
+  const g  = 9.81;
+  const t1 = T * full;                            // in the air to the pitch
+  const t2 = Math.max(T - t1, 0.05);              // off the deck to the bat
   G.ball = {
     t:0, T, aim,
     x:0.28, y:y0, z:RELEASE_Z,
     vx:(targetX - 0.28)/T,
-    vy:(targetY - y0)/T + 0.5*9.81*T,
+    vy:(BALL_R - y0)/t1 + 0.5*g*t1,
     vz:(HIT_PLANE_Z - RELEASE_Z)/T,
     state:'incoming',
     targetX, targetY,
+    bounceAt: t1,
+    vyUp: (targetY - BALL_R)/t2 + 0.5*g*t2,       // solved back from where it has to arrive
+    bounced: false,
+    pitchZ, short,
   };
   trailBuf.length = 0;
 }
@@ -1216,12 +1296,12 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win){
    visible from here, so they are not guessed at. */
 
 const FOLLOW = {
-  'Straight drive': { spin:1.20, lift:0.55, sweep:0.06, dur:620 },   // finishes high
-  'Lofted drive':   { spin:1.40, lift:0.70, sweep:0.08, dur:700 },
-  'Cover drive':    { spin:1.60, lift:0.45, sweep:0.30, dur:640 },
-  'On drive':       { spin:1.50, lift:0.42, sweep:0.28, dur:640 },
-  'Square drive':   { spin:2.10, lift:0.22, sweep:0.45, dur:640 },
-  'Pull':           { spin:3.00, lift:0.26, sweep:0.60, dur:700 },   // flat and wide
+  'Straight drive': { spin:1.70, lift:0.72, sweep:0.10, dur:760 },   // finishes high
+  'Lofted drive':   { spin:2.00, lift:0.92, sweep:0.14, dur:840 },
+  'Cover drive':    { spin:2.20, lift:0.58, sweep:0.46, dur:790 },
+  'On drive':       { spin:2.05, lift:0.55, sweep:0.44, dur:790 },
+  'Square drive':   { spin:2.90, lift:0.28, sweep:0.68, dur:780 },
+  'Pull':           { spin:3.90, lift:0.34, sweep:0.90, dur:830 },   // flat and wide
   'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
   'Edge':           { spin:0.35, lift:0.08, sweep:0.10, dur:320 },   // no stroke at all
 };
@@ -1350,22 +1430,34 @@ function playShot(b, u, remaining){
      takes a proper run. How he gathers it is the same decision the catch already
      made: full length if it was a dive, a slide if he had to cover ground, down
      on a knee if it came to him. */
+  const outMs = clamp(gap/RUN_SPEED*1000, 180, 2200);
   near.userData.chase = {
     t0: performance.now(),
-    outMs:  clamp(gap/RUN_SPEED*1000, 180, 2200),
+    /* He has to BE there when it comes down. The chase used to start at the
+       moment of contact and run at its own pace, so a catch off a skier — four
+       seconds in the air, a fielder two metres away — had him out to the spot in
+       300ms, back at his mark, and standing still by the time the ball landed and
+       the game said CAUGHT. He now sets off late enough to arrive as it drops. */
+    waitMs: clamp(flight*1000 - outMs, 0, 4000),
+    outMs,
     backMs: clamp(gap/(RUN_SPEED*0.72)*1000, 220, 2600),
-    gatherMs: GATHER_MS,
-    throwMs: taken ? 0 : THROW_MS,       // a catch is not thrown in, it is held up
+    // a catch is held up and walked back in, not slid on and shied at the stumps
+    gatherMs: taken ? 900 : GATHER_MS,
+    throwMs:  taken ? 0 : THROW_MS,
     to: { x: lx, z: lz },
-    gather: taken ? (gap > 2.4 ? 'field_dive' : 'field_knees')
+    gather: taken ? (gap > 2.4 ? 'field_dive' : 'keeper_take')
           : gap > 6 ? 'field_slide' : 'field_knees',
+    walkBack: taken,
     thrown: false,
   };
 
   const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
   const f = FOLLOW[shot];
+  // snapshot the bat where it actually met the ball — the arc runs from here
   Bat.follow = { t0: performance.now(), dur: f.dur, sign: hAngle >= 0 ? 1 : -1,
-                 spin: f.spin, lift: f.lift, sweep: f.sweep };
+                 spin: f.spin, lift: f.lift, sweep: f.sweep,
+                 x: (Bat.grip.x + Bat.tip.x)/2, y: (Bat.grip.y + Bat.tip.y)/2,
+                 ang: Math.atan2(Bat.axis.x, -Bat.axis.y) };
 
   G.runs += runs;
   if(out) G.wkts++;
@@ -1507,6 +1599,13 @@ function stepPhysics(dt){
     b.t += dt;
     b.vy -= g*dt;
     b.x += b.vx*dt; b.y += b.vy*dt; b.z += b.vz*dt;
+    if(!b.bounced && b.t >= b.bounceAt){         // it pitches
+      b.bounced = true;
+      b.y  = BALL_R;
+      b.vy = b.vyUp;
+      b.vx *= 0.97; 
+      pitchMark(b.x, b.z);
+    }
     if(tryHit(b)) return;
     // A miss is the window closing, not the ball reaching an arbitrary depth. The
     // old test fired about 60ms past arrival while the window ran to 95ms, so the
@@ -1598,9 +1697,14 @@ function loop(now){
     bat.position.set((Bat.grip.x+Bat.tip.x)/2, (Bat.grip.y+Bat.tip.y)/2, HIT_PLANE_Z);
     bat.rotation.z = Math.atan2(Bat.axis.x, -Bat.axis.y);
 
-    // The follow-through is layered on top of where your hands actually are and
-    // eases back to zero, so the bat is never taken away from you — it just
-    // carries on through the shot the way an arm does, then it is yours again.
+    /* THE STROKE FINISHES ITSELF.
+
+       The follow-through used to be an offset added to wherever the hands were
+       that frame — so the arc was riding on top of live pose data at the one
+       moment pose is least reliable, and every dropped wrist put a kink in it. It
+       now runs from the bat's pose AT CONTACT, which is frozen, and blends back
+       to the player's hands over the last 45% of the stroke. You get a whole
+       shot played out, then the bat is yours again without a jump. */
     const f = Bat.follow;
     if(f){
       const k = (now - f.t0) / f.dur;
@@ -1611,9 +1715,10 @@ function loop(now){
         // unwinds.
         const e = k < 0.30 ? 1 - Math.pow(1 - k/0.30, 2)
                            : 1 - Math.pow((k - 0.30)/0.70, 2);
-        bat.rotation.z += f.spin  * f.sign * e;
-        bat.position.x += f.sweep * f.sign * e;
-        bat.position.y += f.lift  * e;
+        const back = clamp((k - 0.55)/0.45, 0, 1);     // handing it back to the hands
+        bat.rotation.z = lerp(f.ang + f.spin *f.sign*e, bat.rotation.z, back);
+        bat.position.x = lerp(f.x   + f.sweep*f.sign*e, bat.position.x, back);
+        bat.position.y = lerp(f.y   + f.lift *e,        bat.position.y, back);
       }
     }
     puck.position.x = bat.position.x;
@@ -1628,6 +1733,7 @@ function loop(now){
     const step = 1/PHYS_HZ;
     let guard = 0;
     while(acc >= step && guard++ < 12){ stepPhysics(step); acc -= step; }
+    fadeMarks(dt);
     if(!G.ball && G.phase === 'live' && now >= G.nextAt) newDelivery();
     if(G.ball && G.ball.state === 'dead' && now >= G.nextAt){
       G.ball = null;
@@ -1666,7 +1772,21 @@ function loop(now){
   const camOff = Bat.bodyX - camAim;
   if(Math.abs(camOff) > CAM_DEAD) camAim += camOff - Math.sign(camOff)*CAM_DEAD;
   camera.position.x += (camAim - camera.position.x) * 0.05;
-  camera.lookAt(camera.position.x, 1.05, -16);
+
+  /* And the head turns with the shot. You hit it and then watch it — square,
+     behind square, over the rope — instead of staring down the pitch while the
+     ball leaves the frame and a caption tells you what happened. It tracks the
+     ball while it is live and unwinds back down the pitch once the ball is dead,
+     which is also the run-up you are about to watch. */
+  let lx2 = camera.position.x, ly2 = 1.05, lz2 = -16;
+  if(G.ball && G.ball.state === 'hit'){
+    lx2 = G.ball.x; ly2 = Math.max(G.ball.y, 0.35); lz2 = G.ball.z;
+  }
+  const k = G.ball && G.ball.state === 'hit' ? 0.16 : 0.055;   // snaps onto it, drifts back
+  look.x += (lx2 - look.x)*k;
+  look.y += (ly2 - look.y)*k;
+  look.z += (lz2 - look.z)*k;
+  camera.lookAt(look);
 
   /* Players are flat quads, so they turn to face the eye — about the y axis
      only, so they stay stood on the ground rather than tipping over. */
@@ -1675,17 +1795,25 @@ function loop(now){
     const c = u.chase;
     if(c){
       const t  = now - c.t0;
-      const t1 = c.outMs, t2 = t1 + c.gatherMs, t3 = t2 + c.throwMs, t4 = t3 + c.backMs;
-      if(t >= t4){
+      const t0 = c.waitMs, t1 = t0 + c.outMs, t2 = t1 + c.gatherMs,
+            t3 = t2 + c.throwMs, t4 = t3 + c.backMs;
+      // !(t < t4) rather than t >= t4: a chase built without one of its legs
+      // would otherwise leave the fielder frozen mid-field for the rest of the
+      // innings instead of just ending.
+      if(!(t < t4)){
         u.chase = null;
         f.position.set(u.home.x, 0, u.home.z);
         setPose(f, u.base);
+      }else if(t < t0){                                   // watching it up, on his toes
+        f.position.set(u.home.x, 0, u.home.z);
+        if(u.pose !== 'field_alert') setPose(f, 'field_alert');
+        f.position.y = Math.sin(now/300)*0.02 + 0.02;
       }else if(t < t1){                                   // out to the ball
-        const e = t/t1;
+        const e = (t - t0)/c.outMs;
         f.position.x = u.home.x + (c.to.x - u.home.x)*e;
         f.position.z = u.home.z + (c.to.z - u.home.z)*e;
         runFrame(f, t);
-      }else if(t < t2){                                   // dive, slide or pick up
+      }else if(t < t2){                                   // dive, slide, pick up or hold it up
         f.position.set(c.to.x, 0, c.to.z);
         if(u.pose !== c.gather) setPose(f, c.gather);
       }else if(t < t3){                                   // and throw it back in
@@ -1695,7 +1823,10 @@ function loop(now){
         const e = (t - t3)/c.backMs;
         f.position.x = c.to.x + (u.home.x - c.to.x)*e;
         f.position.z = c.to.z + (u.home.z - c.to.z)*e;
-        runFrame(f, t);
+        if(c.walkBack){
+          if(u.pose !== 'field_walk') setPose(f, 'field_walk');
+          f.position.y = Math.abs(Math.sin(t/300*Math.PI))*0.025;
+        }else runFrame(f, t);
       }
     }else{
       // Nobody stands perfectly still waiting for a ball. A few centimetres of
@@ -1713,26 +1844,40 @@ function loop(now){
      back at the mark, in off eight strides with the same bob the fielders have,
      load, arm, release, follow through. */
   const live = G.ball && G.ball.state !== 'dead';
-  let bowlPose;
+  let bowlPose = null;
   if(live){
-    bowlPose = G.ball.t < 0.12 ? 'bowl_release'
-             : G.ball.state === 'incoming' ? 'bowl_follow' : 'bowl_run';
-    bowler.position.z = RELEASE_Z + 0.3 + Math.min(G.ball.t, 0.8)*1.6;
+    // bowl_arm is the arm at the top, bowl_release the body folded over the
+    // front leg after it — that is the order the pictures are actually drawn in,
+    // whatever the two cells are named.
+    bowlPose = G.ball.t < 0.09 ? 'bowl_arm'
+             : G.ball.t < 0.55 ? 'bowl_release'
+             : 'field_walk';
+    bowler.position.z = RELEASE_Z + 0.3 + Math.min(G.ball.t, 1.2)*1.6;
     bowler.position.y = 0;
   }else{
     const k = clamp(1 - (G.nextAt - now)/1700, 0, 1);     // 0 just after the last ball, 1 at the next
     if(k < 0.30){                                         // walks back to his mark
-      bowlPose = 'bowl_run';
+      bowlPose = 'field_walk';
       bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z - 7.5, k/0.30);
-      bowler.position.y = Math.abs(Math.sin(now/260*Math.PI))*0.03;
+      bowler.position.y = Math.abs(Math.sin(now/300*Math.PI))*0.025;
     }else{                                                // and comes in off it
       const r = (k - 0.30)/0.70;
-      bowlPose = r < 0.60 ? 'bowl_run' : r < 0.83 ? 'bowl_load' : 'bowl_arm';
-      bowler.position.z = lerp(RELEASE_Z - 7.5, RELEASE_Z + 0.3, r);
-      bowler.position.y = r < 0.60 ? Math.abs(Math.sin(now/STRIDE_MS*Math.PI))*0.075 : 0;
+      bowler.position.z = lerp(RELEASE_Z - 7.5, RELEASE_Z + 0.3, r*r*(3 - 2*r));   // builds up
+      if(r < 0.62){
+        // The approach runs on the FIELDER frames. bowl_run is a single picture,
+        // so holding it for a whole run-up moved the sprite closer without ever
+        // moving a leg — the whole complaint. Same kit, same figure, and it is
+        // the only two-frame cycle on the sheet.
+        runFrame(bowler, now);
+      }else{
+        bowlPose = r < 0.78 ? 'bowl_run'       // gathers, arm starting back
+                 : r < 0.90 ? 'bowl_load'      // leap, front knee up
+                 :            'bowl_follow';   // delivery stride
+        bowler.position.y = 0;
+      }
     }
   }
-  if(bowler.userData.pose !== bowlPose) setPose(bowler, bowlPose);
+  if(bowlPose && bowler.userData.pose !== bowlPose) setPose(bowler, bowlPose);
   bowler.rotation.y = Math.atan2(camera.position.x - bowler.position.x,
                                  camera.position.z - bowler.position.z);
 
