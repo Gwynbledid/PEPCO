@@ -242,6 +242,14 @@ const TIERS = {
   quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:120 },
 };
 const TIER_ORDER = ['smooth','balanced','quality'];
+/* The gap between balls is however long the fielding takes, floored at the old
+   flat 1.7s and capped so nothing can stall the over.
+
+   Flat 1.7s while a chase to the boundary runs past four seconds meant the
+   bowler was running in and releasing while the fielder was still throwing the
+   last one back: two balls on the screen, one coming at you and one crossing
+   behind. */
+const GAP_MIN = 1700, GAP_MAX = 4200;
 
 const BAT_LEN     = 0.90;   // metres — fixed, never scaled to the real stick
 /* One shoulder span, in world units. Everything the player does is measured in
@@ -704,13 +712,15 @@ const retBall = new THREE.Mesh(new THREE.SphereGeometry(BALL_R*0.85, 10, 8), bal
 retBall.visible = false;
 scene.add(retBall);
 let ret = null;
+const THROW_FLIGHT_MS = 780;
 function throwBack(x, z){
-  ret = { t0: performance.now(), dur: 780, fx:x, fz:z };
+  ret = { t0: performance.now(), dur: THROW_FLIGHT_MS, fx:x, fz:z };
 }
+function clearThrow(){ ret = null; retBall.visible = false; }
 
 // nobody is left mid-dive from the last innings
 function resetField(){
-  ret = null; retBall.visible = false;
+  clearThrow();
   for(const m of marks){ m.visible = false; m.material.opacity = 0; }
   for(const f of fielders){
     f.userData.chase = null;
@@ -1149,6 +1159,8 @@ const G = {
   tier:'balanced',
   manualTier:false,
   runs:0, wkts:0, balls:0,
+  gapMs:GAP_MIN,            // how long the current gap between balls is
+  fieldUntil:0,             // when the fielder will have finished with it
   wagon:[],                // one entry per shot that found the bat
   ball:null,               // active delivery
   nextAt:0,
@@ -1182,6 +1194,8 @@ function newDelivery(){
   // unreachable no matter how they played.
   const aim = Bat.bodyX || 0;
   const targetX = aim + (Math.random()-0.5)*0.9;
+  clearThrow();              // never two balls on the screen at once
+  G.fieldUntil = 0;
   const y0 = 1.95;
   const g  = 9.81;
   const t1 = T * full;                            // in the air to the pitch
@@ -1431,8 +1445,12 @@ function playShot(b, u, remaining){
      made: full length if it was a dive, a slide if he had to cover ground, down
      on a knee if it came to him. */
   const outMs = clamp(gap/RUN_SPEED*1000, 180, 2200);
+  // nobody fields from outside the rope: a six is chased to the boundary, not
+  // over it and into the hoardings
+  const reach = Math.min(1, (BOUNDARY_R - 1.5)/Math.max(Math.hypot(lx, lz), 1e-3));
   near.userData.chase = {
     t0: performance.now(),
+    ball: b,
     /* He has to BE there when it comes down. The chase used to start at the
        moment of contact and run at its own pace, so a catch off a skier — four
        seconds in the air, a fielder two metres away — had him out to the spot in
@@ -1444,12 +1462,15 @@ function playShot(b, u, remaining){
     // a catch is held up and walked back in, not slid on and shied at the stumps
     gatherMs: taken ? 900 : GATHER_MS,
     throwMs:  taken ? 0 : THROW_MS,
-    to: { x: lx, z: lz },
+    to: { x: lx*reach, z: lz*reach },
     gather: taken ? (gap > 2.4 ? 'field_dive' : 'keeper_take')
           : gap > 6 ? 'field_slide' : 'field_knees',
     walkBack: taken,
     thrown: false,
   };
+  const c = near.userData.chase;
+  G.fieldUntil = c.t0 + c.waitMs + c.outMs + c.gatherMs +
+                 (c.throwMs ? c.throwMs + THROW_FLIGHT_MS : 0) + 220;
 
   const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
   const f = FOLLOW[shot];
@@ -1493,7 +1514,8 @@ function missed(b){
 function endBall(){
   G.balls++;
   updateHud();
-  G.nextAt = performance.now() + 1700;
+  G.gapMs  = clamp((G.fieldUntil || 0) - performance.now(), GAP_MIN, GAP_MAX);
+  G.nextAt = performance.now() + G.gapMs;
   if(G.balls >= BALLS_PER_INNINGS || G.wkts >= MAX_WKTS){
     setTimeout(finishInnings, 1500);
     G.phase = 'settling';
@@ -1816,9 +1838,17 @@ function loop(now){
       }else if(t < t2){                                   // dive, slide, pick up or hold it up
         f.position.set(c.to.x, 0, c.to.z);
         if(u.pose !== c.gather) setPose(f, c.gather);
+        // He has it. The struck ball used to carry on rolling across the outfield
+        // while he was already throwing a second one back, which is the other half
+        // of two balls being on the screen at once.
+        if(c.ball && c.ball.state === 'hit') c.ball.state = 'dead';
       }else if(t < t3){                                   // and throw it back in
         if(u.pose !== 'field_throw') setPose(f, 'field_throw');
-        if(!c.thrown){ c.thrown = true; throwBack(c.to.x, c.to.z); }
+        if(!c.thrown){
+          c.thrown = true;
+          // only if it can be home before the next delivery is released
+          if(now + THROW_FLIGHT_MS < G.nextAt) throwBack(c.to.x, c.to.z);
+        }
       }else{                                              // back to his position
         const e = (t - t3)/c.backMs;
         f.position.x = c.to.x + (u.home.x - c.to.x)*e;
@@ -1855,7 +1885,7 @@ function loop(now){
     bowler.position.z = RELEASE_Z + 0.3 + Math.min(G.ball.t, 1.2)*1.6;
     bowler.position.y = 0;
   }else{
-    const k = clamp(1 - (G.nextAt - now)/1700, 0, 1);     // 0 just after the last ball, 1 at the next
+    const k = clamp(1 - (G.nextAt - now)/(G.gapMs || GAP_MIN), 0, 1);  // 0 just after the last ball, 1 at the next
     if(k < 0.30){                                         // walks back to his mark
       bowlPose = 'field_walk';
       bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z - 7.5, k/0.30);
@@ -2059,7 +2089,7 @@ $('playBtn').addEventListener('click', ()=>{
   hideAll(); hud(true);
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
-  G.ball = null; G.nextAt = performance.now() + 1200;
+  G.ball = null; G.gapMs = 1200; G.nextAt = performance.now() + G.gapMs;
   resetField();
   updateHud();
   showCallout('', 'Here comes the first ball', '#FFB020');
@@ -2084,14 +2114,14 @@ $('againBtn').addEventListener('click', ()=>{
   hideAll(); hud(true);
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
-  G.ball = null; G.nextAt = performance.now() + 1000;
+  G.ball = null; G.gapMs = 1000; G.nextAt = performance.now() + G.gapMs;
   resetField();
   updateHud();
 });
 
 document.addEventListener('visibilitychange', ()=>{
   if(document.hidden && G.phase === 'live'){ G.phase = 'paused'; }
-  else if(!document.hidden && G.phase === 'paused'){ G.phase = 'live'; G.nextAt = performance.now()+900; }
+  else if(!document.hidden && G.phase === 'paused'){ G.phase = 'live'; G.gapMs = 900; G.nextAt = performance.now()+G.gapMs; }
 });
 
 document.getElementById('dbgToggle').addEventListener('click', ()=>{
