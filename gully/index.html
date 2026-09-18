@@ -244,7 +244,16 @@ const TIERS = {
 const TIER_ORDER = ['smooth','balanced','quality'];
 
 const BAT_LEN     = 0.90;   // metres — fixed, never scaled to the real stick
+/* One shoulder span, in world units. Everything the player does is measured in
+   shoulder spans and redrawn at this one size, so how far back they stand stops
+   mattering. The image mapping below is flat: two steps back halves how much of
+   the frame a reach covers, so it halved how far the bat travelled — while the
+   ball's line still varied by a fixed 0.9 of a world unit either way. The wide
+   deliveries were out of reach at any distance, and the bat looked pinned to the
+   middle of the screen however hard it was swung. */
+const STANCE_W    = 0.62;
 const BAT_HALF_W  = 0.055;
+const BAT_HOLD_MS = 200;    // how long the bat keeps moving after pose loses the wrists
 const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisible on a phone
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
@@ -296,6 +305,7 @@ const Diag = {
   delegate: '-', gpuNote: '',
   camNote: '', batWhy: '', screen: 'windowed', view: '', lastShot: '-', lastShot2: '',
   inferErrors: 0, inferFirst: '',
+  liveFrames: 0, lostFrames: 0,
   pose: false, wrists: false, visMin: 0, topHand: '-',
 };
 
@@ -379,7 +389,10 @@ function paintDiag(){
   rows.push('view ' + esc(Diag.view) + '  ' + esc(Diag.screen));
   rows.push('');
   rows.push.apply(rows, liveRows());
-  rows.push('grip ' + Bat.grip.x.toFixed(2) + ',' + Bat.grip.y.toFixed(2));
+  rows.push('grip ' + Bat.grip.x.toFixed(2) + ',' + Bat.grip.y.toFixed(2) +
+            '  reach ' + (Bat.bodyX !== undefined ? ((Bat.grip.x + 0.74*(Bat.tip.x-Bat.grip.x) - Bat.bodyX)/(STANCE_W*0.60)).toFixed(2) : '-'));
+  rows.push('stance x' + Bat.scale.toFixed(2) + ' (shoulders ' + Bat.rawShoulderW.toFixed(2) + ')' +
+            '  lost ' + (Diag.liveFrames ? Math.round(100*Diag.lostFrames/Diag.liveFrames) : 0) + '% of frames');
   rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
   el.innerHTML = rows.join('\n');
 }
@@ -491,6 +504,8 @@ scene.fog    = new THREE.Fog(0xA8C6D8, 70, 190);
    0.95 back rather than right on the plane: the bat is 0.9 long, and any closer
    than about that and it is wider than the screen. */
 const EYE_BACK = 0.95, EYE_HEIGHT = 1.66;
+const CAM_DEAD = 0.30;    // how far the player may drift before the view follows
+let   camAim   = 0;
 const camera = new THREE.PerspectiveCamera(74, 1, 0.05, 260);
 camera.position.set(0, EYE_HEIGHT, EYE_BACK);
 camera.lookAt(0, 1.05, -16);
@@ -857,7 +872,7 @@ const Bat = {
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
   prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
-  bodyX:0, shoulderW:1.0, hist:[],
+  bodyX:0, bodyY:1.30, shoulderW:STANCE_W, rawShoulderW:0.50, scale:1, hist:[],
 };
 
 function mapToWorld(nx, ny){
@@ -867,6 +882,12 @@ function mapToWorld(nx, ny){
 }
 
 const inFrame = p => p.x > 0.02 && p.x < 0.98 && p.y > 0.02 && p.y < 0.98;
+
+// A point on the hitting plane, stretched about the player's shoulders so a hand
+// a third of a shoulder off centre lands a third of a shoulder off centre
+// whether they are two metres from the phone or five.
+const stance = p => ({ x: Bat.bodyX + (p.x - Bat.bodyX) * Bat.scale,
+                       y: Bat.bodyY + (p.y - Bat.bodyY) * Bat.scale });
 
 /* Tracking drops constantly — hands leave frame at the top of a backlift, the
    model loses a wrist for a few frames. Every speed here is a position
@@ -920,12 +941,18 @@ function updateBat(lm, now, dt){
   if(ls && rs && inFrame(ls) && inFrame(rs)){
     const lsw = mapToWorld(1 - ls.x, ls.y), rsw = mapToWorld(1 - rs.x, rs.y);
     Bat.bodyX = (lsw.x + rsw.x)/2;
-    Bat.shoulderW = Math.max(0.40, Math.abs(lsw.x - rsw.x));
+    Bat.bodyY = (lsw.y + rsw.y)/2;
+    Bat.rawShoulderW = Math.max(0.10, Math.abs(lsw.x - rsw.x));
+    // Smoothed and capped. The shoulder landmarks jitter by a few thousandths
+    // every frame, and this multiplies everything downstream by it — at the far
+    // end of the range that turns landmark noise into a twitching bat.
+    Bat.scale = lerp(Bat.scale, clamp(STANCE_W / Bat.rawShoulderW, 0.6, 3.0), 0.15);
+    Bat.shoulderW = STANCE_W;          // true by construction, once stance() has been applied
   }
 
   // mirror x — the player sees themselves, not the camera's view
-  const a = mapToWorld(1 - lw.x, lw.y);
-  const b = mapToWorld(1 - rw.x, rw.y);
+  const a = stance(mapToWorld(1 - lw.x, lw.y));
+  const b = stance(mapToWorld(1 - rw.x, rw.y));
   // Higher hand is the top hand — but when the wrists are level "higher" is noise,
   // and every flicker swaps the bat end for end. Measured on a real innings that
   // showed up as 18 to 74 rad/s of phantom bat spin, enough to classify seven
@@ -1498,8 +1525,23 @@ function loop(now){
   }
   if(now - Bat.lastSeen > 700) Bat.ok = false;
 
+  /* Pose drops the wrists hardest during a hard swing — motion blur, and hands
+     that leave the frame at the end of the arc. Hiding the bat the instant that
+     happens took it off the screen on exactly the strokes it mattered for, which
+     is what a swing to the leg side looks like when the bat "never moved". Coast
+     it on the last velocity for a fifth of a second instead, decaying, so a
+     dropped frame costs a little smoothness rather than the whole stroke.
+     Contact is untouched: tryHit still needs a tracked bat. */
+  if(G.phase === 'live'){ Diag.liveFrames++; if(!Bat.ok) Diag.lostFrames++; }
+  const held = !Bat.ok && Bat.lastSeen && now - Bat.lastSeen < BAT_HOLD_MS;
+  if(held){
+    Bat.grip.x += Bat.tipVel.x*dt*0.35; Bat.grip.y += Bat.tipVel.y*dt*0.35;
+    Bat.tip.x  += Bat.tipVel.x*dt*0.35; Bat.tip.y  += Bat.tipVel.y*dt*0.35;
+    Bat.tipVel.x *= 0.93; Bat.tipVel.y *= 0.93;
+  }
+
   // --- bat mesh ---
-  if(G.phase === 'live' && (Bat.ok || Bat.follow)){
+  if(G.phase === 'live' && (Bat.ok || held || Bat.follow)){
     bat.visible = puck.visible = true;
     bat.position.set((Bat.grip.x+Bat.tip.x)/2, (Bat.grip.y+Bat.tip.y)/2, HIT_PLANE_Z);
     bat.rotation.z = Math.atan2(Bat.axis.x, -Bat.axis.y);
@@ -1563,9 +1605,15 @@ function loop(now){
   if(benchmark) tickBenchmark(now);
   if(G.phase === 'calib') tickChecks();
 
-  // the eyes go where the player is, so a ball bowled at them arrives in the
-  // middle of their view however far off centre they are standing
-  camera.position.x += (Bat.bodyX - camera.position.x) * 0.08;
+  /* The eyes go where the player STANDS, not where they swing. bodyX is the
+     shoulder midpoint, and shoulders travel with a stroke — so a view glued to it
+     panned left at the very moment the bat did, and cancelled the movement on
+     screen. That is what made a leg-side swing look like the bat had not moved.
+     A dead zone a third of a metre wide: walk about and the view re-centres, play
+     a shot and it holds still. */
+  const camOff = Bat.bodyX - camAim;
+  if(Math.abs(camOff) > CAM_DEAD) camAim += camOff - Math.sign(camOff)*CAM_DEAD;
+  camera.position.x += (camAim - camera.position.x) * 0.05;
   camera.lookAt(camera.position.x, 1.05, -16);
 
   /* Players are flat quads, so they turn to face the eye — about the y axis
