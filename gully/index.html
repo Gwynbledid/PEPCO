@@ -268,9 +268,9 @@ const MODEL = {
 // ballMs / hitMs are the important half: a slow phone gets a fairer game,
 // not just an uglier one.
 const TIERS = {
-  smooth:   { model:'lite', inputW:192, stride:2, dpr:1.00, shadows:false, ballMs:1500, hitMs:260 },
-  balanced: { model:'lite', inputW:256, stride:1, dpr:1.25, shadows:false, ballMs:1200, hitMs:220 },
-  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:190 },
+  smooth:   { model:'lite', inputW:192, stride:2, dpr:1.00, shadows:false, ballMs:1500, hitMs:330 },
+  balanced: { model:'lite', inputW:256, stride:1, dpr:1.25, shadows:false, ballMs:1200, hitMs:290 },
+  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:250 },
 };
 const TIER_ORDER = ['smooth','balanced','quality'];
 /* The gap between balls is however long the fielding takes, floored at the old
@@ -310,7 +310,49 @@ const BAT_STALE_MS = 260;   // past this, pose is too old to start a stroke from
 const SWING_START = 0.110;   // hand travel in 100ms that means a stroke has begun
 const SWING_MIN   = 0.150;   // and what it must reach to be a shot rather than a leave
 const SWING_SPAN  = 0.42;    // travel across, in world units, for a full-width shot
-const SWING_LAG   = 0.100;   // measured: a swing crosses the threshold 84-114ms before contact
+/* HOW LONG FROM YOUR HANDS MOVING TO THE BAT REACHING THE BALL.
+
+   Part of it is the stroke and part of it is the machine: a camera exposes, a
+   frame is queued, a pose is inferred, and by the time the game knows your hands
+   moved they moved a while ago. I had this at 100ms, measured against a test rig
+   with no camera in it at all — and on a real laptop that read every single ball
+   132 to 183ms late against a 95ms window, so nothing could be hit. The pipeline
+   is most of it.
+
+   A CONTINUOUSLY adapting version of it cannot work, for the same reason the
+   second time as the first: "the pipeline is slow" and "you swung early" are the
+   same measurement, so it absorbs the player's own error and being early stops
+   costing anything. Measured with it in, twice: a swing played 250ms early
+   connected 50 and then 58 times in 60.
+
+   And it is NEGATIVE, which took me embarrassingly long to see. A stroke leads
+   contact by about 100ms — the hands start moving before the bat arrives — but
+   the pipeline is later than that, nearer 150ms, so the two do not just fail to
+   cancel, they overshoot: the game observes your swing beginning slightly AFTER
+   the ball has already reached you. Both a simulated 150ms pipeline and your own
+   over agree on roughly the same number for it.
+
+   Which leaves one honest way to pin it down. It is device-specific and the
+   player cannot see it, so it is measured ONCE — the median of the first four
+   swings of an innings — and then FROZEN for the rest of it. That is how a
+   rhythm game calibrates audio latency, and freezing is what makes it sound:
+   a calibration that keeps adapting absorbs the player's own error and being
+   early stops costing anything, which is exactly what happened both times I
+   tried it (a swing 250ms early connected 50 to 58 times in 60). Four balls
+   cannot absorb a skill. */
+const SWING_LAG   = -0.050;  // the swing is observed this long AFTER the ball arrives
+const CAL_BALLS   = 4;
+let   calSamples  = [];
+let   lagAdj      = 0;
+const swingLag    = () => SWING_LAG + lagAdj;
+function calibrateLag(off){
+  if(calSamples.length >= CAL_BALLS) return;           // measured once, then left alone
+  calSamples.push(off);
+  if(calSamples.length < CAL_BALLS) return;
+  const med = [...calSamples].sort((a,b) => a-b)[CAL_BALLS >> 1];
+  lagAdj = clamp(med, -0.22, 0.22);
+}
+function resetLag(){ calSamples = []; lagAdj = 0; }
 const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisible on a phone
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
@@ -452,7 +494,8 @@ function paintDiag(){
   rows.push('bat low ' + Math.min(Bat.grip.y, Bat.tip.y).toFixed(2) +
             '  high ' + Math.max(Bat.grip.y, Bat.tip.y).toFixed(2));
   rows.push('window ' + (hitWindow()*1000).toFixed(0) + 'ms  lag ' +
-            (SWING_LAG*1000).toFixed(0) + 'ms');
+            (swingLag()*1000).toFixed(0) + 'ms  cal ' +
+            calSamples.length + '/' + CAL_BALLS);
   rows.push('stance x' + Bat.scale.toFixed(2) + ' (shoulders ' + Bat.rawShoulderW.toFixed(2) + ')' +
             '  lost ' + (Diag.liveFrames ? Math.round(100*Diag.lostFrames/Diag.liveFrames) : 0) + '% of frames');
   rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
@@ -845,6 +888,7 @@ function tickCheer(now){
 
 // nobody is left mid-dive from the last innings
 function resetField(){
+  resetLag();                 // every innings measures the machine for itself
   clearThrow();
   cheer = null;
   for(const m of marks){ m.visible = false; m.material.opacity = 0; }
@@ -1449,7 +1493,7 @@ function segDist(px,py, ax,ay, bx,by){
    interval is enough of a floor now, and the window has to come back in because
    it is the only difficulty left — with contact no longer a geometry problem,
    timing is the whole game. */
-const WIN_CAP = 0.115;
+const WIN_CAP = 0.165;
 function hitWindow(){
   return clamp(Math.max(TIERS[G.tier].hitMs/2000, Bat.poseDt), 0.045, WIN_CAP);
 }
@@ -1493,9 +1537,11 @@ const STANCE = { x: 0.26, y: 1.02, ang: 0.72 };
 function strokeFrom(dir, up, cross, ht){
   const s  = dir;                                   // -1 to leg, +1 to the off (world x)
   const lo = clamp(ht, 0.45, 1.55);
+  const dur = 720 + cross*180;
   return {
-    dur: 720 + cross*180,
-    hitAt: 0.30,                                    // share of the stroke spent getting there
+    dur,
+    // the animation meets the ball at the same moment the game says it does
+    hitAt: 0.18,                                     // the bat meets it early in the stroke
     back: { x: STANCE.x*HAND + 0.10*s, y: lo + (cross ? 0.34 : 0.62), ang: (cross ? -1.05 : -0.55)*HAND },
     hit:  { x: 0.12*s,                 y: lo,                          ang: cross ? s*1.40 : 0.16*HAND + 0.55*s },
     end:  { x: (cross ? 0.95 : 0.70)*s, y: lo + (cross ? 0.42 : 0.80) + up*0.35,
@@ -1539,50 +1585,38 @@ function tryHit(b){
     const prev = Bat.lastMag;
     const frac = prev < SWING_START && mag > prev ? (SWING_START - prev)/(mag - prev) : 1;
     const lead = (1 - frac) * Bat.poseDt;              // it began this long ago
-    const contactIn = remaining + lead - SWING_LAG;    // when this stroke would arrive
+    const contactIn = remaining + lead - swingLag();   // when this stroke would arrive
 
-    /* A BACKLIFT IS NOT A STROKE, AND A STROKE IS NOT LATCHED TWICE.
+    /* THE BAT SWINGS WHEN YOU SWING.
 
-       Latching on the first thing that moved consumed the ball's one swing about
-       a third of a second before it arrived — measured over a soak with a
-       backlift in front of every delivery, every ball latched 307 to 314ms early
-       against a window of 95. The stroke that followed was ignored, which on a
-       phone reads as the bat refusing to swing at all once you stop standing
-       perfectly still between deliveries.
+       The clever version of this — arming, threshold crossings, rejecting
+       anything that would not arrive near the ball — was too clever. On a real
+       camera it decided not to swing at all, because a person holding a stick
+       never gets far enough below the threshold for a "crossing" to be seen, and
+       a stroke it refuses to start is a stroke you cannot play.
 
-       A crossing is a RISE through the threshold from below, and each crossing
-       replaces the last. That separates a backlift from a stroke without needing
-       to know which is which: the hands go up, the reading falls back under as
-       they turn, and the downswing crosses again.
-
-       There is no second clause. I tried one — a rescue that re-latched on any
-       substantially bigger motion, for a wind-up that never dips back under the
-       threshold — and it is unsound however it is fenced: it re-dates the stroke
-       to NOW, with no crossing to justify the new date, so it walks the latch
-       forward until it happens to land inside the window. That is a cheat, and it
-       measured as one: a swing played 250ms early came back as a shot 44 to 59
-       times in 60 with the rescue in, and it took three attempts at fencing it
-       before I accepted the idea was wrong rather than mistuned.
-
-       A crossing, or nothing. The cost is that a wind-up flowing straight into a
-       stroke with no pause is dated from the wind-up and reads early — which is
-       honest, and the arming above means the hands only have to drop under the
-       threshold once in 600ms for it not to happen. */
-    /* A crossing only counts once the hands have been seen BELOW the threshold on
-       this ball. Otherwise a swing already under way when the watch opens is
-       treated as one just beginning, and dated from the wrong moment: a stroke
-       played 250ms early came back as a shot 45 times in 60 that way. */
-    if(mag < SWING_START) b.armed = true;
-    const crossed  = b.armed && prev < SWING_START && mag >= SWING_START;
-    if(crossed && Math.abs(contactIn) < 0.30){
+       So: if the hands are moving decisively and a stroke is not already running
+       for this ball, that is a stroke. A backlift flowing into a downswing is
+       handled by allowing exactly ONE upgrade — a later motion nearly twice as
+       big is the real thing and the first was the wind-up — and no more than one,
+       because an unbounded upgrade walks the contact moment forward through the
+       swing until it lands inside the window by luck. */
+    const decisive = mag > SWING_START;
+    const upgrade  = b.swing && b.upgrades < 1 && mag > b.swing.mag*1.7;
+    if(decisive && (!b.swing || upgrade)){
+      b.upgrades = (b.upgrades || 0) + (b.swing ? 1 : 0);
       b.swing = { t0: b.t - lead, mag, dx:sw.dx, dy:sw.dy, remaining: contactIn,
-                  peakT: b.t, handY: Bat.mid ? Bat.mid.y : Bat.grip.y };
-      startStroke(sw, b);                              // the bat moves when YOU do
+                  handY: Bat.mid ? Bat.mid.y : Bat.grip.y };
+      startStroke(sw, b);                              // and the bat moves NOW
     }
     if(b.swing){
-      if(mag > b.swing.mag){ b.swing.mag = mag; b.swing.peakT = b.t; }
-      if(Math.abs(b.t - (b.swing.t0 + SWING_LAG)) < 0.055){
-        b.swing.dx = sw.dx; b.swing.dy = sw.dy;        // which way, at the moment it matters
+      /* Direction at the HARDEST moment of the swing, which is the bat going
+         through the ball. It used to be sampled a fixed lag after the stroke
+         began — and once that lag went negative it sampled BEFORE the stroke
+         started, which flattened every drive to 15 degrees. */
+      if(mag > b.swing.mag){
+        b.swing.mag = mag;
+        b.swing.dx = sw.dx; b.swing.dy = sw.dy;
         b.swing.handY = Bat.mid ? Bat.mid.y : Bat.grip.y;
       }
     }
@@ -1594,6 +1628,7 @@ function tryHit(b){
   }
 
   if(remaining < -win){                                 // window shut: judge the swing
+    if(b.swing) calibrateLag(b.swing.remaining);
     /* The stroke length is FIXED, and it has to be.
 
        I tried learning it from each player's own swing — the gap between the
@@ -1819,7 +1854,10 @@ function playShot(b, swing){
      How well it was timed decides what the loft becomes. Middle an upward swing
      and it leaves at about 40 degrees and carries. Get the timing wrong and the
      same swing goes almost straight up, which is a catch, not a six. */
-  const rise    = clamp(into.dy / RISE_SPAN, -1, 1);        // up is positive
+  /* UP LOFTS IT, DOWN KEEPS IT DOWN — read off the same swing that chose the
+     shot's direction, sampled at the contact moment, rather than a separate
+     220ms window that could disagree with it. One measurement, one stroke. */
+  const rise    = clamp(swing.dy / 0.17, -1, 1);            // up is positive
   /* Continuous through zero, so a level swing is a flat shot rather than jumping
      straight to a loft. Hands down keeps it along the ground; hands up lofts it
      in proportion to how far they rose, and mistiming steepens that into a
