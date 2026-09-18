@@ -270,7 +270,7 @@ const MODEL = {
 const TIERS = {
   smooth:   { model:'lite', inputW:192, stride:2, dpr:1.00, shadows:false, ballMs:1500, hitMs:260 },
   balanced: { model:'lite', inputW:256, stride:1, dpr:1.25, shadows:false, ballMs:1200, hitMs:220 },
-  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:180 },
+  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:190 },
 };
 const TIER_ORDER = ['smooth','balanced','quality'];
 /* The gap between balls is however long the fielding takes, floored at the old
@@ -306,8 +306,7 @@ const BAT_HALF_W  = 0.055;
    frame at the end of the arc — and a pull is the worst of the lot. At 200ms the
    bat was still blinking out in the middle of the stroke. It now coasts for most
    of a second, slowing, and fades over the last third rather than vanishing. */
-const BAT_HOLD_MS  = 620;
-const BAT_STALE_MS = 260;   // past this the bat is drawn but can no longer strike
+const BAT_STALE_MS = 260;   // past this, pose is too old to start a stroke from
 const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisible on a phone
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
@@ -890,8 +889,42 @@ const bat = new THREE.Group();
   part(new THREE.CylinderGeometry(0.0235, 0.0235, 0.018, 8), gripMat, -half + 0.925);
 })();
 bat.visible = false;
-let batFade = 1;
 scene.add(bat);
+
+/* ARMS. A bat on its own in mid-air never looked like batting, because there was
+   nothing holding it. Two forearms running off the bottom of the frame to the
+   handle is all it takes — it is what you actually see from behind your own eyes,
+   and it costs two cylinders and two gloves. They are NOT part of the bat group:
+   they reach from a fixed shoulder to wherever the handle has swung to, which is
+   the whole reason they read as arms rather than decoration. */
+const skinMat  = new THREE.MeshLambertMaterial({ color:0xC98F63 });
+const gloveMat = new THREE.MeshLambertMaterial({ color:0xEDEFE9 });
+const arms = [0, 1].map(() => {
+  const g = new THREE.Group();
+  const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.052, 1, 7), skinMat);
+  fore.position.y = 0.5;                    // unit long, pivot at the shoulder end
+  g.add(fore);
+  const glove = new THREE.Mesh(new THREE.SphereGeometry(0.062, 8, 6), gloveMat);
+  g.add(glove);
+  g.userData.fore = fore; g.userData.glove = glove;
+  g.visible = false;
+  scene.add(g);
+  return g;
+});
+
+/* Points the arm from the shoulder at the handle and stretches it to reach. */
+function aimArm(g, sx, sy, sz, hx, hy, hz){
+  const dx = hx - sx, dy = hy - sy, dz = hz - sz;
+  const len = Math.hypot(dx, dy, dz) || 1e-3;
+  g.position.set(sx, sy, sz);
+  g.userData.fore.scale.y = len;
+  g.userData.fore.position.y = len/2;
+  g.userData.glove.position.set(dx, dy, dz);
+  // point local +y down the arm
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),
+                                  new THREE.Vector3(dx/len, dy/len, dz/len));
+  g.userData.glove.position.set(0, len, 0);
+}
 
 /* A scuff where it pitched. Without it the bounce is invisible: the ball is a
    few pixels 12 metres away and the eye has nothing to hang the length on. Eight
@@ -1116,6 +1149,9 @@ const Bat = {
   bodyX:0, bodyY:1.30, shoulderW:STANCE_W, rawShoulderW:0.50, scale:1, hist:[],
   poseDt:0.045,             // measured seconds between pose results, smoothed
   lastSeg:null,             // where the blade was at the previous pose
+  stroke:null,              // the stroke being played, if any
+  lastMag:0,                // last swing magnitude, for interpolating the crossing
+  pose:{ x:0.26, y:0.84, a:0.72 },   // where the bat is drawn, eased
 };
 
 function mapToWorld(nx, ny){
@@ -1400,76 +1436,133 @@ function segDist(px,py, ax,ay, bx,by){
    measured, not assumed. A phone that slows down gets a wider window without
    anyone choosing a tier, which is what the tier table was always trying to do
    by hand. Capped so it cannot become a free hit. */
-const WIN_CAP = 0.150;                                  // 300ms wide, absolute limit
+/* The window was widened to a couple of pose intervals because a blade could
+   pass between two camera frames and never be seen. Nothing passes between
+   frames any more: the swing is a threshold crossing and the crossing is
+   interpolated, so WHEN it began is known to better than a frame. One pose
+   interval is enough of a floor now, and the window has to come back in because
+   it is the only difficulty left — with contact no longer a geometry problem,
+   timing is the whole game. */
+const WIN_CAP = 0.115;
 function hitWindow(){
-  return clamp(Math.max(TIERS[G.tier].hitMs/2000, Bat.poseDt*1.8), 0.05, WIN_CAP);
+  return clamp(Math.max(TIERS[G.tier].hitMs/2000, Bat.poseDt), 0.045, WIN_CAP);
 }
 
-/* THE BLADE BETWEEN TWO CAMERA FRAMES.
+/* ════════════════════════════════════════════════════════════════
+   THE SWING, NOT THE BAT
 
-   Pose returns every 70 to 100ms on a mid-range phone. A blade crossing the line
-   of the ball at 9 m/s covers most of a metre in that time and is 0.11m wide, so
-   the game saw it well to one side of the ball and then well to the other, and
-   never on it. Against a simulated phone that is 57% of deliveries connecting at
-   a 70ms pose cadence and 39% at 100ms — and widening the timing window barely
-   moves it, because the window only says WHEN to look. There was nothing there
-   to see.
+   Until now the bat WAS your hands: every pose result moved it, so it twitched
+   with the landmarks, vanished when they dropped, and hung in the air on its own
+   because nothing else was attached to it. It also meant contact was a geometry
+   problem — a 0.11m blade had to physically intersect the ball — which is why
+   the blade passing between two camera frames took so much work to survive.
 
-   Contact is therefore tested against the path the bat took since the last pose.
-   Samples are spaced about 0.12m along it, comfortably inside the 0.17m a ball
-   and a blade are worth together.
+   It now works the way a batter actually does. The bat sits in a stance. You
+   swing, the swing is read from how your hands travelled, and the bat plays that
+   stroke. What decides the shot is the swing: which way it went, how hard, and
+   when — and WHEN is the one thing a 20-30fps camera measures exactly, because
+   the ball's clock is exact.
 
-   A jump bigger than a real swing is not a path, it is a tracking gap, and
-   sweeping one would invent contact out of nothing — so those are not swept. */
-const MAX_SWEEP = 1.6;                                  // metres in one pose interval
-function sweptDist(bx, by){
-  let best = segDist(bx, by, Bat.grip.x, Bat.grip.y, Bat.tip.x, Bat.tip.y);
-  const L = Bat.lastSeg;
-  if(!L) return best;
-  const travel = Math.max(Math.hypot(Bat.grip.x - L.gx, Bat.grip.y - L.gy),
-                          Math.hypot(Bat.tip.x  - L.tx, Bat.tip.y  - L.ty));
-  if(travel > MAX_SWEEP) return best;
-  const steps = clamp(Math.ceil(travel/0.12), 1, 8);
-  for(let i = 1; i <= steps; i++){
-    const w = i/(steps + 1);
-    const r = segDist(bx, by,
-      lerp(L.gx, Bat.grip.x, w), lerp(L.gy, Bat.grip.y, w),
-      lerp(L.tx, Bat.tip.x,  w), lerp(L.ty, Bat.tip.y,  w));
-    if(r.d < best.d) best = r;
-  }
-  return best;
+   It also unlocks the shot you have been asking for since the first over. A
+   stroke played LATE, rising, goes behind square — an upper cut to third man, a
+   glance to fine leg — which was impossible while the ball could only leave the
+   bat in the direction the blade was facing.
+   ═══════════════════════════════════════════════════════════════ */
+
+const SWING_START = 0.075;   // hand travel in 100ms that means a stroke has begun
+const SWING_MIN   = 0.150;   // and what it must reach to be a shot rather than a leave
+const SWING_SPAN  = 0.42;    // travel across, in world units, for a full-width shot
+const SWING_LAG   = 0.110;   // from the stroke starting to the bat reaching the ball
+
+/* THE STANCE. Where the bat lives when you are not playing at anything: down by
+   the back foot, toe near the ground, angled across. It no longer moves with
+   your hands at all, which is the whole point — a bat that twitches with every
+   landmark is a bat you cannot look away from. */
+const STANCE = { x: 0.26, y: 0.84, ang: 0.72 };
+
+/* A stroke, built from the swing rather than picked out of a table of poses.
+
+   back   where the bat comes from, up and behind
+   hit    where it meets the ball, at the height the ball is actually at
+   end    where it finishes, swept round the way the ball went and high
+
+   Cross-batted strokes are flatter through contact and finish much further
+   round; a drive goes down through the line and finishes high and straight. */
+function strokeFrom(dir, up, cross, ht){
+  const s  = dir;                                   // -1 to leg, +1 to the off (world x)
+  const lo = clamp(ht, 0.45, 1.55);
+  return {
+    dur: 720 + cross*180,
+    hitAt: 0.30,                                    // share of the stroke spent getting there
+    back: { x: STANCE.x*HAND + 0.10*s, y: lo + (cross ? 0.34 : 0.62), ang: (cross ? -1.05 : -0.55)*HAND },
+    hit:  { x: 0.12*s,                 y: lo,                          ang: cross ? s*1.40 : 0.16*HAND + 0.55*s },
+    end:  { x: (cross ? 0.95 : 0.70)*s, y: lo + (cross ? 0.42 : 0.80) + up*0.35,
+            ang: (cross ? 3.40 : 2.05)*s },
+  };
 }
 
+/* Started by YOUR hands moving, not by the shot resolving 90ms later. The
+   direction is whatever the swing has shown so far, which by the time it has
+   travelled 85mm is already the difference between a drive and a pull. */
+function startStroke(sw, b){
+  const ax = Math.abs(sw.dx), ay = Math.abs(sw.dy);
+  const cross = ax > ay*1.2 && ax > 0.09 ? 1 : 0;
+  const dir   = Math.sign(sw.dx || (0.01*HAND));
+  Bat.stroke = Object.assign(strokeFrom(dir, sw.dy > 0 ? 1 : 0, cross, b ? b.y : 0.9),
+                             { t0: performance.now() });
+}
+
+/* The strongest moment of the swing is when you meant to hit it. Watched over a
+   span far wider than the window, so a stroke that was nowhere near in time is
+   still RECORDED — which is what lets a miss say "swung 180ms early" instead of
+   saying nothing. */
 function tryHit(b){
   const win = hitWindow();
   const remaining = b.T - b.t;                          // seconds until the ball reaches the bat
 
-  /* Diagnostics only, over a much wider span than the window: how close the bat
-     ever came to this ball and when. A miss that logs "bat 0.41m away" is a
-     different bug from one that logs "0.06m away, 140ms early", and until both
-     were in the per-ball table there was no way to tell them apart. */
-  if(Math.abs(remaining) < 0.30 && Bat.ok){
-    const pr = sweptDist(b.x, b.y);
-    if(!b.probe || pr.d < b.probe.d)
-      b.probe = { d:pr.d, remaining, low:Math.min(Bat.grip.y, Bat.tip.y),
-                  high:Math.max(Bat.grip.y, Bat.tip.y) };
+  /* WHEN THE STROKE BEGAN, not when it was fastest.
+
+     Taking the fastest moment sounds right and is not measurable: a swing is
+     sampled three or four times, and which of those happens to be the largest
+     tells you very little about when the player meant to strike it. The START is
+     a threshold crossing, and a threshold crossing can be interpolated BETWEEN
+     two samples — so it is known to better than the pose interval, which nothing
+     else about the swing is. Contact is then a fixed stroke length after it.
+
+     Direction is read at the contact moment rather than at the start, because
+     the first 30mm of a pull and a drive look much alike. */
+  if(Math.abs(remaining) < 0.42 && Bat.ok){
+    const sw  = swingInto(100);
+    const mag = Math.hypot(sw.dx, sw.dy);
+
+    if(!b.swing && mag > SWING_START){
+      // where between the last sample and this one it crossed
+      const prev = Bat.lastMag;
+      const frac = prev < SWING_START && mag > prev ? (SWING_START - prev)/(mag - prev) : 1;
+      const lead = (1 - frac) * Bat.poseDt;            // it began this long ago
+      b.swing = { t0: b.t - lead, mag, dx:sw.dx, dy:sw.dy,
+                  remaining: remaining + lead - SWING_LAG,
+                  handY: Bat.mid ? Bat.mid.y : Bat.grip.y };
+      startStroke(sw, b);                              // the bat moves when YOU do
+    }
+    if(b.swing){
+      if(mag > b.swing.mag) b.swing.mag = mag;         // how hard, over the whole stroke
+      if(Math.abs(b.t - (b.swing.t0 + SWING_LAG)) < 0.055){
+        b.swing.dx = sw.dx; b.swing.dy = sw.dy;        // which way, at the moment it matters
+        b.swing.handY = Bat.mid ? Bat.mid.y : Bat.grip.y;
+      }
+    }
+    Bat.lastMag = mag;
   }
 
-  if(remaining < -win){                                 // window shut
-    if(b.near){ playShot(b, b.near.u, b.near.remaining); return true; }
+  if(remaining < -win){                                 // window shut: judge the swing
+    if(b.swing && b.swing.mag >= SWING_MIN && Math.abs(b.swing.remaining) <= win){
+      playShot(b, b.swing);
+      return true;
+    }
     return false;
   }
-  if(remaining > win || !Bat.ok) return false;          // not open yet, or no bat to swing
-
-  const { d, u } = sweptDist(b.x, b.y);
-  if(d > BALL_R + BAT_HALF_W + 0.03) return false;
-
-  if(!b.near || d < b.near.d){
-    b.near = { d, u, remaining };                       // still closing
-    return false;
-  }
-  playShot(b, b.near.u, b.near.remaining);              // past the closest point — that was the shot
-  return true;
+  return false;
 }
 
 /* Line of the shot, from three things the player controls.
@@ -1487,7 +1580,9 @@ function tryHit(b){
 const POS_GAIN    = 1.40;   // where you met it, measured against your own shoulders
 const POS_SPAN    = 0.46;   // how far the hands travel, in shoulder spans, for a full line
 const RISE_SPAN   = 0.35;  // how far the hands must travel up, or down, for a full loft
-const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing behind
+const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point
+const BEHIND_MAX  = 1.25;   // how much further a late, rising stroke carries it round
+const BEHIND_LIMIT= 2.45;   // 140 degrees: third man and fine leg, not the sightscreen
 
 /* WHERE YOU MET IT decides the line.
 
@@ -1531,14 +1626,14 @@ const LINE_LIMIT  = 1.40;   // ~80 degrees: square leg round to point, nothing b
    The two are blended by how cross-batted the swing actually was, so there is no
    cliff between a drive and a pull; a half-cross whip off the hip lands between
    the two. */
-function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
+function shotLine(swing, remaining, win, into, ht, pitchZ){
   // Scaled to 60% of shoulder width: the ball only ever arrives within about
   // half a shoulder of the body, and the bat centre can only sit half a bat
   // length from the contact point, so a full shoulder was an extreme nobody
   // reached. Measured over a real innings the offset ran to 0.67 of a shoulder.
-  const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * POS_SPAN), -1, 1);
-  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;
-  const blade   = clamp((u - 0.74) / 0.42, -1, 1);                // logged, not steering
+  const lateral = clamp(swing.dx / SWING_SPAN, -1, 1);           // which way the hands went
+  const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;   // + is late
+  const blade   = 0;
 
   /* Two measures, not one.
 
@@ -1553,15 +1648,36 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
      is about what the player chose to do. Using the gated number for both meant
      a flat swing at a full ball scored as a near-perfect choice: it read as
      barely cross-batted, and barely cross-batted is what a full ball wants. */
-  const ax = Math.abs(into.dx), ay = Math.abs(into.dy);
-  const flat  = clamp((ax - ay)/0.22, 0, 1) * clamp((ax - 0.10)/0.12, 0, 1);
+  const ax = Math.abs(swing.dx), ay = Math.abs(swing.dy);
+  const flat  = clamp((ax - ay)/0.20, 0, 1) * clamp((ax - 0.08)/0.10, 0, 1);
   const cross = flat * clamp((ht - 0.62)/0.18, 0, 1);
 
-  const early      = clamp(-timing, 0, 1);                        // met before it arrived
-  const posAngle   = lateral * POS_GAIN;                          // a drive: where you met it
-  const crossAngle = Math.sign(into.dx || 1) * lerp(0.70, LINE_LIMIT, early);
-  const angle = clamp(lerp(posAngle, crossAngle, cross), -LINE_LIMIT, LINE_LIMIT);
-  return { angle, lateral, timing, blade, cross, flat };
+  /* WHERE IT GOES.
+
+     Straight out from how far across the swing travelled, and then carried ROUND
+     by how late it was played. That second term is the shot behind the wicket,
+     and it has been missing since the first over: an upper cut is a late, rising
+     stroke on the off, a glance is a late, rising stroke to leg, and neither can
+     exist in a model where the ball leaves in the direction the blade faces. It
+     needs the stroke to be going somewhere sideways already, so a late defensive
+     push does not fly to third man.
+
+     The rest is unchanged in spirit — a full swing across is square, a gentle one
+     is straight — but the reference is the swing itself now rather than where a
+     jittering bat happened to be. */
+  const early  = clamp(-timing, 0, 1);
+  // a stroke played two thirds of the way through the window is already as fine
+  // as it gets — any later than that and it is a miss, so the range has to live
+  // inside the part of the window a player can actually use
+  const late   = clamp(timing/0.62, 0, 1);
+  const sidey  = clamp((Math.abs(lateral) - 0.18)/0.30, 0, 1);    // is it going sideways at all
+  const dir    = Math.sign(swing.dx || (0.01*HAND));
+  const rising = clamp(swing.dy / 0.16, 0, 1);                    // hands coming up through it
+
+  const base   = Math.abs(lateral) * LINE_LIMIT * lerp(0.80, 1.0, early);
+  const behind = late * rising * sidey * BEHIND_MAX;              // round past square
+  const angle  = clamp(dir * (base + behind), -BEHIND_LIMIT, BEHIND_LIMIT);
+  return { angle, lateral, timing, blade, cross, flat, behind: behind > 0.25 };
 }
 
 /* ── NAMING THE SHOT ───────────────────────────────────────────
@@ -1570,23 +1686,6 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
    foot versus back foot, and the wrist snap inside a helicopter, are not
    visible from here, so they are not guessed at. */
 
-const FOLLOW = {
-  'Straight drive': { spin:1.70, lift:0.72, sweep:0.10, dur:760 },   // finishes high
-  'Lofted drive':   { spin:2.00, lift:0.92, sweep:0.14, dur:840 },
-  'Cover drive':    { spin:2.20, lift:0.58, sweep:0.46, dur:790 },
-  'On drive':       { spin:2.05, lift:0.55, sweep:0.44, dur:790 },
-  'Square drive':   { spin:2.90, lift:0.28, sweep:0.68, dur:780 },
-  /* A pull is not a drive with more sweep on it. The bat comes round flat at
-     about the height the ball arrived, carries on across the body, and finishes
-     high behind the front shoulder — so it wants most of a half-turn of rotation,
-     a long way sideways, and the lift arriving LATE rather than with the sweep.
-     A cut is the same shape, shorter and squarer, on the other side. */
-  'Pull':           { spin:4.60, lift:0.62, sweep:1.25, dur:900, flat:0.72, lateLift:true },
-  'Cut':            { spin:3.60, lift:0.30, sweep:1.00, dur:780, flat:0.80, lateLift:true },
-  'Flick':          { spin:2.60, lift:0.50, sweep:0.62, dur:760 },   // wristy, bat still up
-  'Defensive push': { spin:0.20, lift:0.06, sweep:0.05, dur:300 },
-  'Edge':           { spin:0.35, lift:0.08, sweep:0.10, dur:320 },   // no stroke at all
-};
 
 /* Named from the line and how high it went. Bat spin is not used: it reads tens
    of rad/s off a hand-to-hand axis that is barely separated, which named seven
@@ -1596,6 +1695,7 @@ function classifyShot(line, speed, spin, loft, cross){
   const deg = line.angle * 57.2958;
   const a   = Math.abs(deg);
   const off = deg * HAND >= 0;                 // +x is the off side for a right-hander
+  if(line.behind) return off ? 'Upper cut' : 'Glance';
   if(cross && a >= 26) return off ? 'Cut' : 'Pull';
   if(a < 22) return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
   if(a < 55) return off ? 'Cover drive' : 'On drive';
@@ -1604,49 +1704,34 @@ function classifyShot(line, speed, spin, loft, cross){
   return off ? 'Square drive' : 'Flick';
 }
 
-function playShot(b, u, remaining){
+function playShot(b, swing){
   const t = TIERS[G.tier];
+  const remaining = swing.remaining;
 
-  const power  = clamp(Bat.tipSpeed / 12, 0, 1);
-  const timing = 1 - clamp(Math.abs(remaining) / hitWindow(), 0, 1);
-  const sweet  = 1 - clamp(Math.abs(u - 0.74) / 0.42, 0, 1);
+  const power  = clamp(Math.hypot(swing.dx, swing.dy) / 0.55, 0, 1);
+  /* Squared, not linear. Linear made the edge of the window worth nearly as much
+     as the middle of it, so every swing that connected at all came off — 400
+     balls with the timing scattered across the window produced no dots, no
+     edges, no wickets and 17 an over. Timing is the only thing left to be good
+     at, so being good at it has to be worth something. */
+  const timing = Math.pow(1 - clamp(Math.abs(remaining) / hitWindow(), 0, 1), 1.7);
 
-  /* WHERE YOU MET IT — read off the hands, not off a point on the blade.
+  /* DID YOU SWING AT THE RIGHT HEIGHT.
 
-     The sweet spot sits 0.67m down the bat from the top hand. With the bat
-     vertical that is almost all height and barely any sideways, so it made a fine
-     reference. With the bat HORIZONTAL, which is what a pull is, that 0.67m is
-     entirely sideways: the blade reaches right across the body and the reference
-     point ends up on the opposite side of the player from their hands. An over
-     of pulls came back as three edges, three lofted drives and a square drive,
-     with nothing named a pull at all.
+     This replaces "where on the blade did it hit", which is what judged a stroke
+     while the bat was your hands. That measure was fair on a drive and random on
+     a pull — the blade crosses most of a metre of crease in one pose sample — and
+     with the bat no longer tracking your hands it does not exist at all.
 
-     The wrist midpoint is where the player actually is. It does not move when
-     the bat turns, so it means the same thing whatever stroke is being played,
-     and it is the one point on the bat the camera sees directly. The bat's own
-     reach is added back at a quarter weight, so stretching out to a wide one
-     still counts for something without the blade's orientation dominating. */
-  const hands  = Bat.mid || { x: Bat.grip.x, y: Bat.grip.y };
-  const blade  = Bat.grip.x + 0.74 * (Bat.tip.x - Bat.grip.x);
-  const batX   = hands.x + 0.25 * (blade - hands.x);
-  // how the hands travelled into the ball — this now decides the line of a
-  // cross-batted stroke as well as how high the ball goes
+     Where your HANDS were is the honest version of the same question, and it is
+     a real skill: through a drive the hands are about 40cm above the ball, and
+     through a flat-batted stroke they are level with it. */
   const into   = swingInto(220);
-  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, hitWindow(), into, b.y);
+  const line   = shotLine(swing, remaining, hitWindow(), into, b.y, b.pitchZ);
+  const handY  = swing.handY;
+  const sweet  = 1 - clamp(Math.abs(handY - (b.y + lerp(0.42, 0.02, line.cross))) / 0.55, 0, 1);
 
-  /* HOW WELL IT WAS STRUCK.
-
-     Where the ball met the blade judges a drive: the bat is vertical, it passes
-     through the line once, and the toe and the splice are genuinely worse places
-     to hit it than the middle. It judges a pull at random. The blade is flat and
-     crossing the crease at nine metres a second, so which centimetre of it the
-     contact test happened to record is noise — on 40 identical pulls it put 21 of
-     them down as edges.
-
-     The ball's clock has no such problem. The further a stroke is from a drive,
-     the more of the verdict timing takes, until for a flat-batted pull it is
-     almost all of it. */
-  const strikeRaw = lerp(sweet, timing, line.cross);
+  const strikeRaw = 0.45*sweet + 0.55*timing;
 
   /* THE RIGHT STROKE FOR THE LENGTH.
 
@@ -1667,7 +1752,7 @@ function playShot(b, u, remaining){
   // Range set so a well struck lofted shot can reach the rope: at 7 + 21 a hard,
   // well timed shot carried 29 of the 62 it needed, so going aerial was a pure
   // risk with nothing on the other side of it.
-  const speed   = (8 + power*26) * quality * lerp(0.66, 1.16, fit);
+  const speed   = (9 + power*25) * quality * lerp(0.66, 1.16, fit);
 
   /* An edge is not an aimed shot. Catch the ball off the toe or right down by
      the splice and it can fly off behind square — past the keeper, or away
@@ -1798,13 +1883,16 @@ function playShot(b, u, remaining){
 
   const shot  = edged ? 'Edge'
               : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft, line.cross > 0.5);
-  const f = FOLLOW[shot];
-  // snapshot the bat where it actually met the ball — the arc runs from here
-  Bat.follow = { t0: performance.now(), dur: f.dur, sign: hAngle >= 0 ? 1 : -1,
-                 spin: f.spin, lift: f.lift, sweep: f.sweep,
-                 flat: f.flat || 0, lateLift: !!f.lateLift,
-                 x: (Bat.grip.x + Bat.tip.x)/2, y: (Bat.grip.y + Bat.tip.y)/2,
-                 ang: Math.atan2(Bat.axis.x, -Bat.axis.y) };
+  /* The stroke is already running — it started when your hands did. Now that the
+     shot is resolved, the FINISH is rewritten to match where the ball actually
+     went, so a pull ends up round behind the shoulder and a straight drive ends
+     up high and straight. The part already played is left alone; you cannot
+     retake a backlift. */
+  if(Bat.stroke){
+    const fin = strokeFrom(Math.sign(hAngle || 1), rise > 0 ? 1 : 0, line.cross > 0.5 ? 1 : 0, b.y);
+    Bat.stroke.end = fin.end;
+    Bat.stroke.dur = Math.max(Bat.stroke.dur, fin.dur);
+  }
 
   /* What the tracker follows. Set at contact because the outcome is decided at
      contact, but only shown while the ball is actually travelling — the number
@@ -1849,7 +1937,7 @@ function missed(b){
      read: whether the bat was nowhere near, or right on it and 140ms out, or the
      ball was under the toe, was a guess every time. */
   G.wagon.push({ miss:true, bowled, len:-(b.pitchZ || 0), ballY:b.y,
-                 probe:b.probe || null, win:hitWindow(), out:bowled });
+                 swing:b.swing || null, win:hitWindow(), out:bowled });
   b.state = 'dead';
   endBall();
 }
@@ -1929,14 +2017,15 @@ function drawWagon(){
                      s.len.toFixed(1).padStart(4) + ' ' + s.ballY.toFixed(2).padStart(5) + ' ';
         if(s.miss){
           // early/late as a share of the window, so >1 means outside it entirely
-          const p = s.probe;
+          const p = s.swing;
           const off = p ? (-p.remaining/s.win) : null;
           return head + '  -     -  ' + (off === null ? '   -' : f(off,5)) +
                  '     -     -     -     -     -     -  ' +
                  (s.bowled ? 'BOWLED' : 'MISSED') +
-                 (p ? '  bat ' + p.d.toFixed(2) + 'm away, blade ' +
-                      p.low.toFixed(2) + '-' + p.high.toFixed(2)
-                    : '  no bat tracked');
+                 (p ? '  swung ' + p.mag.toFixed(2) + 'm ' +
+                      (p.remaining > 0 ? (p.remaining*1000).toFixed(0) + 'ms early'
+                                       : (-p.remaining*1000).toFixed(0) + 'ms late')
+                    : '  no swing');
         }
         return head +
           ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
@@ -2065,72 +2154,67 @@ function loop(now){
     Bat.grip.x += Bat.tipVel.x*dt*0.35; Bat.grip.y += Bat.tipVel.y*dt*0.35;
     Bat.tip.x  += Bat.tipVel.x*dt*0.35; Bat.tip.y  += Bat.tipVel.y*dt*0.35;
   }
-  /* Pose drops the wrists hardest during the fastest part of a swing — motion
-     blur, and hands that leave the frame at the end of the arc — and a pull is
-     the worst of the lot. Hiding the bat the instant that happens takes it off
-     the screen on exactly the strokes it matters for.
-
-     Two separate clocks, which used to be one. HOW LONG THE BAT IS DRAWN is
-     BAT_HOLD_MS, now most of a second, coasting and fading. HOW LONG IT CAN
-     STILL HIT is BAT_STALE_MS, much shorter, because striking a ball with a bat
-     nobody has seen for half a second is inventing a shot. */
+  /* The bat is never hidden now, and never fades: it is a stance, and a stance
+     does not depend on pose arriving this frame. Losing the wrists costs you the
+     ability to START a stroke, which is honest, and nothing else. All the
+     machinery for coasting a tracked bat through a dropped frame went with it. */
   if(now - Bat.lastSeen > BAT_STALE_MS) Bat.ok = false;
   if(G.phase === 'live'){ Diag.liveFrames++; if(!Bat.ok) Diag.lostFrames++; }
-  const age   = Bat.lastSeen ? now - Bat.lastSeen : Infinity;
-  const shown = age < BAT_HOLD_MS;                  // still worth drawing
-  const held  = shown && !Bat.ok;                   // and coasting on its last speed
-  if(held){
-    Bat.grip.x += Bat.tipVel.x*dt*0.35; Bat.grip.y += Bat.tipVel.y*dt*0.35;
-    Bat.tip.x  += Bat.tipVel.x*dt*0.35; Bat.tip.y  += Bat.tipVel.y*dt*0.35;
-    Bat.tipVel.x *= 0.93; Bat.tipVel.y *= 0.93;
-  }
-  // fade over the last third of the hold instead of blinking out
-  const fade = shown ? clamp((BAT_HOLD_MS - age)/(BAT_HOLD_MS*0.35), 0, 1) : 1;
-  if(batFade !== fade){
-    batFade = fade;
-    for(const m of [batMat, gripMat, caneMat]){ m.transparent = fade < 1; m.opacity = fade; }
-  }
 
-  // --- bat mesh ---
-  if(G.phase === 'live' && (shown || Bat.follow)){
+  /* --- the bat: a stance, and a stroke when you play one ---
+
+     It is no longer your hands. The stance is fixed relative to where you are
+     standing and breathes very slightly; a stroke is a scripted path from the
+     backlift through the ball and round into the finish, started the moment your
+     hands move rather than when the shot resolves. Nothing here is driven by a
+     pose result frame to frame, which is what was making it jitter. */
+  if(G.phase === 'live' || G.phase === 'settling'){
     bat.visible = puck.visible = true;
-    bat.position.set((Bat.grip.x+Bat.tip.x)/2, (Bat.grip.y+Bat.tip.y)/2, HIT_PLANE_Z);
-    bat.rotation.z = Math.atan2(Bat.axis.x, -Bat.axis.y);
-
-    /* THE STROKE FINISHES ITSELF.
-
-       The follow-through used to be an offset added to wherever the hands were
-       that frame — so the arc was riding on top of live pose data at the one
-       moment pose is least reliable, and every dropped wrist put a kink in it. It
-       now runs from the bat's pose AT CONTACT, which is frozen, and blends back
-       to the player's hands over the last 45% of the stroke. You get a whole
-       shot played out, then the bat is yours again without a jump. */
-    const f = Bat.follow;
-    if(f){
-      const k = (now - f.t0) / f.dur;
-      if(k >= 1){ Bat.follow = null; }
-      else {
-        // Out fast, back slow — a stroke, not a wobble. A symmetric bump reads as
-        // the bat twitching and returning; the real thing whips through and then
-        // unwinds.
-        const e = k < 0.30 ? 1 - Math.pow(1 - k/0.30, 2)
-                           : 1 - Math.pow((k - 0.30)/0.70, 2);
-        const back = clamp((k - 0.55)/0.45, 0, 1);     // handing it back to the hands
-        /* A cross-batted stroke starts FLAT and lifts LATE. The bat comes round
-           horizontal at about the height the ball arrived, carries across the
-           body, and only then climbs behind the front shoulder. Driving the lift
-           off the same curve as the sweep made a pull look like a scoop. */
-        const liftE = f.lateLift ? Math.pow(clamp((k - 0.10)/0.55, 0, 1), 0.7) : e;
-        const ang0  = f.flat ? lerp(f.ang, -f.sign*Math.PI/2, f.flat) : f.ang;
-        bat.rotation.z = lerp(ang0  + f.spin *f.sign*e, bat.rotation.z, back);
-        bat.position.x = lerp(f.x   + f.sweep*f.sign*e, bat.position.x, back);
-        bat.position.y = lerp(f.y   + f.lift *liftE,    bat.position.y, back);
+    const st = Bat.stroke;
+    let bx, by, ba;
+    if(st){
+      const k = (now - st.t0)/st.dur;
+      if(k >= 1){ Bat.stroke = null; }
+      else{
+        const h = st.hitAt;
+        if(k < h){                                  // backlift into the ball
+          const e = Math.pow(k/h, 1.7);             // gathers, then whips through
+          bx = lerp(st.back.x, st.hit.x, e);
+          by = lerp(st.back.y, st.hit.y, e);
+          ba = lerp(st.back.ang, st.hit.ang, e);
+        }else{                                      // through it and round
+          const e = Math.pow((k - h)/(1 - h), 0.62);
+          bx = lerp(st.hit.x, st.end.x, e);
+          by = lerp(st.hit.y, st.end.y, e);
+          ba = lerp(st.hit.ang, st.end.ang, e);
+        }
       }
     }
+    if(bx === undefined){                           // at rest, with a slow tap
+      const idle = Math.sin(now/900) * 0.018;
+      bx = STANCE.x*HAND;  by = STANCE.y + idle;  ba = STANCE.ang*HAND;
+    }
+    // eased so a stroke starting or ending never snaps
+    Bat.pose.x += (bx - Bat.pose.x) * (st ? 0.55 : 0.12);
+    Bat.pose.y += (by - Bat.pose.y) * (st ? 0.55 : 0.12);
+    Bat.pose.a += (ba - Bat.pose.a) * (st ? 0.55 : 0.12);
+
+    bat.position.set(Bat.bodyX + Bat.pose.x, Bat.pose.y, HIT_PLANE_Z);
+    bat.rotation.z = Bat.pose.a;
     puck.position.x = bat.position.x;
     puck.position.z = HIT_PLANE_Z;
+
+    // the arms reach from your shoulders to the handle, wherever it has got to
+    const gx = bat.position.x - Math.sin(Bat.pose.a)*BAT_LEN*0.5;
+    const gy = bat.position.y + Math.cos(Bat.pose.a)*BAT_LEN*0.5;
+    for(let i = 0; i < 2; i++){
+      arms[i].visible = true;
+      aimArm(arms[i], camera.position.x + (i ? 0.19 : -0.19), 1.16, EYE_BACK - 0.14,
+             gx + (i ? 0.035 : -0.035), gy - (i ? 0.10 : 0.0), HIT_PLANE_Z);
+    }
   }else{
     bat.visible = puck.visible = false;
+    arms[0].visible = arms[1].visible = false;
   }
 
   // --- physics ---
