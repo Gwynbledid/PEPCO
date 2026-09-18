@@ -743,7 +743,7 @@ const Bat = {
   prevTip:null, tipSpeed:0, tipVel:{x:0,y:0}, lastSeen:0,
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
   prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
-  bodyX:0, shoulderW:1.0,
+  bodyX:0, shoulderW:1.0, hist:[],
 };
 
 function mapToWorld(nx, ny){
@@ -766,6 +766,25 @@ function loseTrack(why){
   Bat.prevMid = null;
   Bat.prevTip = null;
   Bat.prevAng = null;
+  Bat.hist.length = 0;        // a gap makes every displacement across it a lie
+}
+
+/* How the hands travelled INTO the ball, over the last `ms` of motion.
+
+   Height used to be taken from the swing's fastest moment — which is the
+   backlift, and a backlift goes up. Over a real over that read rise positive on
+   eight balls out of eight, so everything lofted, everything was named a lofted
+   drive, and the catches followed from that rather than from how the ball was
+   actually struck. */
+function swingInto(ms){
+  const h = Bat.hist;
+  if(h.length < 2) return { x:0, y:0 };
+  const last = h[h.length-1];
+  let first = h[0];
+  for(let i = h.length-1; i >= 0; i--){ if(last.t - h[i].t >= ms){ first = h[i]; break; } }
+  const dt = (last.t - first.t)/1000;
+  if(dt < 0.02) return { x:0, y:0 };
+  return { x:(last.x - first.x)/dt, y:(last.y - first.y)/dt };
 }
 
 function updateBat(lm, now, dt){
@@ -845,6 +864,9 @@ function updateBat(lm, now, dt){
     Bat.handSpeed = Math.max(hs, Bat.handSpeed * 0.82);
   }
   Bat.prevMid = { ...Bat.mid };
+
+  Bat.hist.push({ t:now, x:Bat.mid.x, y:Bat.mid.y });
+  while(Bat.hist.length > 2 && now - Bat.hist[0].t > 500) Bat.hist.shift();
 
   const angNow = Math.atan2(Bat.axis.x, -Bat.axis.y);
   if(Bat.prevAng !== null && dt > 0){
@@ -1039,7 +1061,10 @@ function playShot(b, u, remaining){
   const timing = 1 - clamp(Math.abs(remaining) / (t.hitMs/2000), 0, 1);
   const sweet  = 1 - clamp(Math.abs(u - 0.74) / 0.42, 0, 1);
   const quality = 0.22 + 0.78 * (0.42*timing + 0.58*sweet);
-  const speed  = (7 + power*21) * quality;
+  // Range set so a well struck lofted shot can reach the rope: at 7 + 21 a hard,
+  // well timed shot carried 29 of the 62 it needed, so going aerial was a pure
+  // risk with nothing on the other side of it.
+  const speed  = (8 + power*26) * quality;
 
   // Where the shot goes is decided by how you swung, not how you were standing.
   // Tilt used to place it, which saturated the moment a player held the stick
@@ -1068,8 +1093,8 @@ function playShot(b, u, remaining){
      How well it was timed decides what the loft becomes. Middle an upward swing
      and it leaves at about 40 degrees and carries. Get the timing wrong and the
      same swing goes almost straight up, which is a catch, not a six. */
-  const swingUp = Bat.swingDir.y * Bat.handSpeed;          // world units/s, up is positive
-  const rise    = clamp(swingUp / RISE_REF, -1, 1);
+  const into    = swingInto(140);                           // the travel into the ball
+  const rise    = clamp(into.y / RISE_REF, -1, 1);          // up is positive
   const loft    = rise <= 0
     ? clamp(0.05 - rise*0.04, 0.02, 0.12)                  // along the ground
     : clamp(0.35 + rise*0.35 + (1 - timing)*0.75, 0.15, 1.45);
@@ -1086,19 +1111,33 @@ function playShot(b, u, remaining){
   const carry = vh * flight;
   const rollF = clamp(1.6 - loft*2.0, 0.2, 1.6);   // flat shots skid, lofted ones stop dead
   const total = carry + vh * rollF;
+  const apex  = b.y + (b.vy*b.vy)/(2*g);           // how high it actually got
 
-  // An upward swing that was badly timed leaves almost vertically and comes down
-  // in a fielder's hands, however hard it was hit.
-  const skied = loft > 1.05 && carry < 30;
+  /* A catch is a mishit, not a height.
+
+     The old rule was pure geometry — steep and short meant out — so a ball that
+     popped up and dropped at the batsman's feet was caught by a fielder who was
+     never standing there, and a properly middled lofted drive was punished the
+     same as a leading edge.
+
+     Now it is the quality of the strike that decides. Middle an aerial shot and
+     it clears the field; mistime it and it hangs up for someone. A ball that
+     barely leaves the bat drops safe, and one that clears the rope is a six
+     whatever it looked like. */
+  const aerial    = loft > 0.35;
+  const mishit    = 1 - quality;                    // 0 perfect, up to 0.78 awful
+  const catchable = aerial && carry > 6 && carry < BOUNDARY_R;
+  const caught    = catchable && Math.random() < clamp(mishit*1.4 - 0.15, 0, 0.85);
 
   let runs, label, sub, out = false;
-  if(skied)                    { runs=0; out=true; label='CAUGHT'; sub='Skied it, and taken'; }
+  if(caught)                   { runs=0; out=true; label='CAUGHT'; sub='Hung in the air, and taken'; }
   else if(carry >= BOUNDARY_R) { runs=6; label='SIX'; sub='All the way'; }
   else if(total >= BOUNDARY_R) { runs=4; label='FOUR'; sub='Beats the fielder'; }
   else if(total >= 44)         { runs=3; label='3'; sub='Into the deep'; }
   else if(total >= 24)         { runs=2; label='2'; sub='Back for the second'; }
   else if(total >= 14)         { runs=1; label='1'; sub='Pushed into the gap'; }
   else                         { runs=0; label='Dot'; sub= sweet<0.3 ? 'Off the edge' : 'Straight to the fielder'; }
+  if(aerial && !out && carry <= 6) sub = 'Popped up, dropped safe';
   if(edged && !out && runs > 0) sub = hAngle > 0 ? 'Edged away to third man' : 'Edged past the keeper';
 
   const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
@@ -1115,7 +1154,7 @@ function playShot(b, u, remaining){
                  tip:Bat.tipSpeed, pow:power, qual:quality,
                  axis:Math.atan2(Bat.axis.x, -Bat.axis.y)*57.2958,   // 0 = bat hanging down
                  gripY:Bat.grip.y, ballY:b.y, sep:Bat.sep,
-                 rise, loft, out, edged });
+                 rise, loft, out, edged, apex, hang:flight });
   Diag.lastShot = (hAngle >= 0 ? '+' : '') + (hAngle*57.3).toFixed(0) + 'deg from where ' +
                   line.lateral.toFixed(2) + ' time ' + line.timing.toFixed(2) +
                   ' blade ' + line.blade.toFixed(2);
@@ -1199,13 +1238,13 @@ function drawWagon(){
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  line latrl timing  rise  loft   tip  pow qual  shot\n' +
+    log.textContent = 'ball  line latrl timing  rise  loft  apex hang carry  shot\n' +
       G.wagon.map((s, i) =>
         String(i+1).padStart(3) + ' ' +
         ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
         f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.rise,5) + ' ' +
-        s.loft.toFixed(2).padStart(5) + ' ' + s.tip.toFixed(1).padStart(5) + ' ' +
-        s.pow.toFixed(2).padStart(4) + ' ' + s.qual.toFixed(2).padStart(4) + '  ' + s.shot +
+        s.loft.toFixed(2).padStart(5) + ' ' + s.apex.toFixed(1).padStart(5) + ' ' +
+        s.hang.toFixed(1).padStart(4) + ' ' + s.carry.toFixed(0).padStart(5) + '  ' + s.shot +
         (s.out ? '  OUT' : '')
       ).join('\n');
   }
