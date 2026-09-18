@@ -249,7 +249,16 @@ const TIER_ORDER = ['smooth','balanced','quality'];
    bowler was running in and releasing while the fielder was still throwing the
    last one back: two balls on the screen, one coming at you and one crossing
    behind. */
-const GAP_MIN = 1700, GAP_MAX = 4200;
+/* A gap long enough to bowl in. The bowler walks back, waits at his mark with
+   the ball, and only then runs in — rather than releasing the instant the throw
+   reaches him.
+
+     WALK_MS    back to his mark
+     ...        standing there, however long the fielding still needs
+     SETTLE_MS  the ball is home and he is holding it
+     RUNUP_MS   in off his mark and delivers  */
+const GAP_MIN = 2600, GAP_MAX = 5600;
+const WALK_MS = 700, SETTLE_MS = 1100, RUNUP_MS = 1500;
 
 const BAT_LEN     = 0.90;   // metres — fixed, never scaled to the real stick
 /* One shoulder span, in world units. Everything the player does is measured in
@@ -266,6 +275,7 @@ const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisib
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
 const RELEASE_Z   = -18;
+const MARK_Z      = RELEASE_Z - 7.5;   // the top of the bowler's mark
 const PHYS_HZ     = 120;
 const BALLS_PER_INNINGS = 12;
 const MAX_WKTS    = 3;
@@ -399,6 +409,8 @@ function paintDiag(){
   rows.push.apply(rows, liveRows());
   rows.push('grip ' + Bat.grip.x.toFixed(2) + ',' + Bat.grip.y.toFixed(2) +
             '  reach ' + (Bat.bodyX !== undefined ? ((Bat.grip.x + 0.74*(Bat.tip.x-Bat.grip.x) - Bat.bodyX)/(STANCE_W*0.60)).toFixed(2) : '-'));
+  rows.push('bat low ' + Math.min(Bat.grip.y, Bat.tip.y).toFixed(2) +
+            '  high ' + Math.max(Bat.grip.y, Bat.tip.y).toFixed(2));
   rows.push('stance x' + Bat.scale.toFixed(2) + ' (shoulders ' + Bat.rawShoulderW.toFixed(2) + ')' +
             '  lost ' + (Diag.liveFrames ? Math.round(100*Diag.lostFrames/Diag.liveFrames) : 0) + '% of frames');
   rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
@@ -1183,10 +1195,18 @@ const G = {
 function newDelivery(){
   const t = TIERS[G.tier];
   const T = t.ballMs/1000;
-  const full   = 0.62 + Math.random()*0.26;      // 0.62 short, 0.88 full — share of the way down
+  /* Length runs from a full ball 3.6m in front to a short one 7.6m back, and
+     nothing arrives below the toe of a bat held in the hands.
+
+     Pitched to 2.2m the ball was arriving at 0.51m and one delivery in five came
+     in under 0.60m — a yorker you can only dig out with the last centimetre of
+     the blade, on a 0.90m bat whose reach is fixed. The bounce off the deck was
+     honest (0.48 to 0.81 of the impact speed, which is what a pitch does); the
+     lengths were simply fuller than anything this bat can get down to. */
+  const full   = 0.58 + Math.random()*0.22;      // 0.58 short, 0.80 full — share of the way down
   const pitchZ = RELEASE_Z + (HIT_PLANE_Z - RELEASE_Z) * full;
-  const short  = (0.88 - full)/0.26;             // 0 pitched up, 1 banged in
-  const targetY = clamp(lerp(0.42, 1.42, short) + (Math.random()-0.5)*0.24, 0.30, 1.60);
+  const short  = (0.80 - full)/0.22;             // 0 pitched up, 1 banged in
+  const targetY = clamp(lerp(0.60, 1.42, short) + (Math.random()-0.5)*0.22, 0.50, 1.50);
   // Bowled AT the batter. It used to be aimed at world zero while "in front of
   // your body" was measured from wherever the player stood, so anyone standing
   // off to one side had every ball arrive on the same side of them — eleven
@@ -1470,7 +1490,7 @@ function playShot(b, u, remaining){
   };
   const c = near.userData.chase;
   G.fieldUntil = c.t0 + c.waitMs + c.outMs + c.gatherMs +
-                 (c.throwMs ? c.throwMs + THROW_FLIGHT_MS : 0) + 220;
+                 (c.throwMs ? c.throwMs + THROW_FLIGHT_MS : 0) + SETTLE_MS + RUNUP_MS;
 
   const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
   const f = FOLLOW[shot];
@@ -1885,25 +1905,36 @@ function loop(now){
     bowler.position.z = RELEASE_Z + 0.3 + Math.min(G.ball.t, 1.2)*1.6;
     bowler.position.y = 0;
   }else{
-    const k = clamp(1 - (G.nextAt - now)/(G.gapMs || GAP_MIN), 0, 1);  // 0 just after the last ball, 1 at the next
-    if(k < 0.30){                                         // walks back to his mark
-      bowlPose = 'field_walk';
-      bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z - 7.5, k/0.30);
-      bowler.position.y = Math.abs(Math.sin(now/300*Math.PI))*0.025;
-    }else{                                                // and comes in off it
-      const r = (k - 0.30)/0.70;
-      bowler.position.z = lerp(RELEASE_Z - 7.5, RELEASE_Z + 0.3, r*r*(3 - 2*r));   // builds up
+    /* The run-up is a fixed 1.5s at the END of the gap, not a fraction of it.
+       Stretching it over the whole gap made him amble in over five seconds after
+       a boundary and sprint in after a dot; and holding the ball at his mark is
+       the pause itself. */
+    const toBall = G.nextAt - now;
+    if(toBall <= RUNUP_MS){                               // in off his mark
+      const r = 1 - toBall/RUNUP_MS;
+      bowler.position.z = lerp(MARK_Z, RELEASE_Z + 0.3, r*r*(3 - 2*r));   // builds up
       if(r < 0.62){
         // The approach runs on the FIELDER frames. bowl_run is a single picture,
         // so holding it for a whole run-up moved the sprite closer without ever
-        // moving a leg — the whole complaint. Same kit, same figure, and it is
-        // the only two-frame cycle on the sheet.
+        // moving a leg. Same kit, same figure, and it is the only two-frame
+        // cycle on the sheet.
         runFrame(bowler, now);
       }else{
         bowlPose = r < 0.78 ? 'bowl_run'       // gathers, arm starting back
                  : r < 0.90 ? 'bowl_load'      // leap, front knee up
                  :            'bowl_follow';   // delivery stride
         bowler.position.y = 0;
+      }
+    }else{
+      const since = (G.gapMs || GAP_MIN) - toBall;        // since the last ball ended
+      if(since < WALK_MS){                                // walks back
+        bowlPose = 'field_walk';
+        bowler.position.z = lerp(RELEASE_Z + 1.9, MARK_Z, since/WALK_MS);
+        bowler.position.y = Math.abs(Math.sin(now/300*Math.PI))*0.025;
+      }else{                                              // and waits there with it
+        bowlPose = 'field_alert';
+        bowler.position.z = MARK_Z;
+        bowler.position.y = Math.sin(now/620)*0.014 + 0.014;
       }
     }
   }
@@ -2089,7 +2120,7 @@ $('playBtn').addEventListener('click', ()=>{
   hideAll(); hud(true);
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
-  G.ball = null; G.gapMs = 1200; G.nextAt = performance.now() + G.gapMs;
+  G.ball = null; G.gapMs = GAP_MIN; G.nextAt = performance.now() + G.gapMs;
   resetField();
   updateHud();
   showCallout('', 'Here comes the first ball', '#FFB020');
@@ -2114,7 +2145,7 @@ $('againBtn').addEventListener('click', ()=>{
   hideAll(); hud(true);
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
-  G.ball = null; G.gapMs = 1000; G.nextAt = performance.now() + G.gapMs;
+  G.ball = null; G.gapMs = GAP_MIN; G.nextAt = performance.now() + G.gapMs;
   resetField();
   updateHud();
 });
