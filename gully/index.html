@@ -682,6 +682,47 @@ const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color:0xFF2
 scene.add(trail);
 const trailBuf = [];
 
+/* A chase, as a run rather than a pose.
+
+   Two run frames is all the sheet has, and two is enough — what was missing was
+   cadence. The pose was set once at the start and then held for a flat 1.2s while
+   the figure slid across the grass, which is what makes a sprite read as a
+   cardboard cut-out. It now alternates frames on a stride clock, bobs on each
+   step, and the chase is a sequence of legs: run out, gather, throw, run back.
+   field_slide, field_throw and field_walk were in the atlas and drawn into the
+   texture but never once used. */
+const RUN_SPEED = 6.5;    // metres a second — a club fielder, not a sprinter
+const STRIDE_MS = 125;    // half a stride; the two run frames alternate on it
+const GATHER_MS = 320;
+const THROW_MS  = 280;
+
+// The throw, so the arm action has something to be about. Cosmetic and entirely
+// its own thing — it never touches G.ball or the over's state machine, which is
+// what stalled the over the last time something was layered onto the ball.
+const retBall = new THREE.Mesh(new THREE.SphereGeometry(BALL_R*0.85, 10, 8), ballMat);
+retBall.visible = false;
+scene.add(retBall);
+let ret = null;
+function throwBack(x, z){
+  ret = { t0: performance.now(), dur: 780, fx:x, fz:z };
+}
+
+// nobody is left mid-dive from the last innings
+function resetField(){
+  ret = null; retBall.visible = false;
+  for(const f of fielders){
+    f.userData.chase = null;
+    f.position.set(f.userData.home.x, 0, f.userData.home.z);
+    setPose(f, f.userData.base);
+  }
+}
+
+function runFrame(mesh, t){
+  const p = Math.floor(t/STRIDE_MS) % 2 ? 'field_runL' : 'field_runR';
+  if(mesh.userData.pose !== p) setPose(mesh, p);
+  mesh.position.y = Math.abs(Math.sin(t/STRIDE_MS*Math.PI)) * 0.075;
+}
+
 // bat
 const batMat = new THREE.MeshLambertMaterial({ color:0xD8B888 });
 const bat = new THREE.Mesh(new THREE.BoxGeometry(BAT_HALF_W*2, BAT_LEN, 0.035), batMat);
@@ -1304,11 +1345,22 @@ function playShot(b, u, remaining){
   if(!out && apex > 3.0 && gap > DIVE && carry <= 12) sub = 'Popped up, nobody near it';
   if(edged && !out && runs > 0) sub = 'Edged, and it beat ' + who;
 
-  // and the fielder goes after it
-  near.userData.to = { x: lx, z: lz };
-  near.userData.chaseT0 = performance.now();
-  near.userData.chasePose = taken ? (gap > 2.4 ? 'field_dive' : 'field_knees')
-                   : lx > near.userData.home.x ? 'field_runR' : 'field_runL';
+  /* and the fielder goes after it — timed off the distance rather than a flat
+     1.2 seconds, so a ball at his feet is picked up at once and one in the gap
+     takes a proper run. How he gathers it is the same decision the catch already
+     made: full length if it was a dive, a slide if he had to cover ground, down
+     on a knee if it came to him. */
+  near.userData.chase = {
+    t0: performance.now(),
+    outMs:  clamp(gap/RUN_SPEED*1000, 180, 2200),
+    backMs: clamp(gap/(RUN_SPEED*0.72)*1000, 220, 2600),
+    gatherMs: GATHER_MS,
+    throwMs: taken ? 0 : THROW_MS,       // a catch is not thrown in, it is held up
+    to: { x: lx, z: lz },
+    gather: taken ? (gap > 2.4 ? 'field_dive' : 'field_knees')
+          : gap > 6 ? 'field_slide' : 'field_knees',
+    thrown: false,
+  };
 
   const shot = edged ? 'Edge' : classifyShot(line, Bat.handSpeed, Bat.axisSpin, loft);
   const f = FOLLOW[shot];
@@ -1620,29 +1672,81 @@ function loop(now){
      only, so they stay stood on the ground rather than tipping over. */
   for(const f of fielders){
     const u = f.userData;
-    if(u.chaseT0){
-      const k = (now - u.chaseT0)/1200;
-      if(k >= 1){
-        u.chaseT0 = 0;
+    const c = u.chase;
+    if(c){
+      const t  = now - c.t0;
+      const t1 = c.outMs, t2 = t1 + c.gatherMs, t3 = t2 + c.throwMs, t4 = t3 + c.backMs;
+      if(t >= t4){
+        u.chase = null;
         f.position.set(u.home.x, 0, u.home.z);
         setPose(f, u.base);
-      }else{
-        const e = k < 0.55 ? k/0.55 : 1 - (k - 0.55)/0.45;   // out to it, then back
-        f.position.x = u.home.x + (u.to.x - u.home.x)*e;
-        f.position.z = u.home.z + (u.to.z - u.home.z)*e;
-        if(u.pose !== u.chasePose) setPose(f, u.chasePose);
+      }else if(t < t1){                                   // out to the ball
+        const e = t/t1;
+        f.position.x = u.home.x + (c.to.x - u.home.x)*e;
+        f.position.z = u.home.z + (c.to.z - u.home.z)*e;
+        runFrame(f, t);
+      }else if(t < t2){                                   // dive, slide or pick up
+        f.position.set(c.to.x, 0, c.to.z);
+        if(u.pose !== c.gather) setPose(f, c.gather);
+      }else if(t < t3){                                   // and throw it back in
+        if(u.pose !== 'field_throw') setPose(f, 'field_throw');
+        if(!c.thrown){ c.thrown = true; throwBack(c.to.x, c.to.z); }
+      }else{                                              // back to his position
+        const e = (t - t3)/c.backMs;
+        f.position.x = c.to.x + (u.home.x - c.to.x)*e;
+        f.position.z = c.to.z + (u.home.z - c.to.z)*e;
+        runFrame(f, t);
       }
+    }else{
+      // Nobody stands perfectly still waiting for a ball. A few centimetres of
+      // weight shift, out of phase across the field, for the cost of one sine.
+      f.position.y = G.ball && G.ball.state === 'incoming'
+        ? Math.sin(now/520 + u.home.x) * 0.022 + 0.022 : 0;
     }
     f.rotation.y = Math.atan2(camera.position.x - f.position.x,
                               camera.position.z - f.position.z);
   }
 
-  const bowlPose = !G.ball ? 'bowl_run'
-                 : G.ball.t < 0.10 ? 'bowl_release'
-                 : G.ball.state === 'incoming' ? 'bowl_follow' : 'bowl_run';
+  /* The bowler runs in. He used to stand on the spot at the top of his mark and
+     flick between three frames, which is the one figure the batter looks at for
+     the whole delivery. The gap between balls is a known 1.7s, so it is a run-up:
+     back at the mark, in off eight strides with the same bob the fielders have,
+     load, arm, release, follow through. */
+  const live = G.ball && G.ball.state !== 'dead';
+  let bowlPose;
+  if(live){
+    bowlPose = G.ball.t < 0.12 ? 'bowl_release'
+             : G.ball.state === 'incoming' ? 'bowl_follow' : 'bowl_run';
+    bowler.position.z = RELEASE_Z + 0.3 + Math.min(G.ball.t, 0.8)*1.6;
+    bowler.position.y = 0;
+  }else{
+    const k = clamp(1 - (G.nextAt - now)/1700, 0, 1);     // 0 just after the last ball, 1 at the next
+    if(k < 0.30){                                         // walks back to his mark
+      bowlPose = 'bowl_run';
+      bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z - 7.5, k/0.30);
+      bowler.position.y = Math.abs(Math.sin(now/260*Math.PI))*0.03;
+    }else{                                                // and comes in off it
+      const r = (k - 0.30)/0.70;
+      bowlPose = r < 0.60 ? 'bowl_run' : r < 0.83 ? 'bowl_load' : 'bowl_arm';
+      bowler.position.z = lerp(RELEASE_Z - 7.5, RELEASE_Z + 0.3, r);
+      bowler.position.y = r < 0.60 ? Math.abs(Math.sin(now/STRIDE_MS*Math.PI))*0.075 : 0;
+    }
+  }
   if(bowler.userData.pose !== bowlPose) setPose(bowler, bowlPose);
   bowler.rotation.y = Math.atan2(camera.position.x - bowler.position.x,
                                  camera.position.z - bowler.position.z);
+
+  // the throw on its way back to the bowler's end
+  if(ret){
+    const e = (now - ret.t0)/ret.dur;
+    if(e >= 1 || G.phase === 'over'){ ret = null; retBall.visible = false; }
+    else{
+      retBall.visible = true;
+      retBall.position.set(lerp(ret.fx, 0.4, e),
+                           1.05 + Math.sin(Math.PI*e)*2.6 - 0.35*e,
+                           lerp(ret.fz, RELEASE_Z + 0.3, e));
+    }
+  }
 
   renderer.render(scene, camera);
   if(!$('diag').hidden)
@@ -1811,6 +1915,7 @@ $('playBtn').addEventListener('click', ()=>{
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
   G.ball = null; G.nextAt = performance.now() + 1200;
+  resetField();
   updateHud();
   showCallout('', 'Here comes the first ball', '#FFB020');
 });
@@ -1835,6 +1940,7 @@ $('againBtn').addEventListener('click', ()=>{
   G.phase = 'live';
   G.runs = G.wkts = G.balls = 0; G.wagon = [];
   G.ball = null; G.nextAt = performance.now() + 1000;
+  resetField();
   updateHud();
 });
 
