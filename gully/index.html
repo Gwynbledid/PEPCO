@@ -2221,7 +2221,16 @@ function loop(now){
     const st = Bat.stroke;
     let bx, by, ba;
     if(st){
-      const k = (now - st.t0)/st.dur;
+      /* Clamped at zero, and that is not belt and braces — it is the bug.
+
+         startStroke stamps t0 from performance.now(), inside the physics step,
+         while the loop's `now` is the requestAnimationFrame timestamp from the
+         START of the same frame. So on the stroke's first frame `now` is a few
+         milliseconds BEFORE t0, k is negative, and Math.pow of a negative number
+         is NaN. Bat.pose is eased toward its target, so one NaN makes it NaN for
+         ever: the bat went invisible on the first shot of the innings and stayed
+         invisible, with bat.visible still reading true the whole time. */
+      const k = clamp((now - st.t0)/st.dur, 0, 1.0001);
       if(k >= 1){ Bat.stroke = null; }
       else{
         const h = st.hitAt;
@@ -2242,6 +2251,16 @@ function loop(now){
       const idle = Math.sin(now/900) * 0.018;
       bx = STANCE.x*HAND;  by = STANCE.y + idle;  ba = STANCE.ang*HAND;
     }
+    /* And a guard, because an eased value is unforgiving: anything that is not a
+       number, once, is that value for the rest of the innings. Nothing about the
+       bat is worth losing a whole innings to. */
+    if(!isFinite(bx) || !isFinite(by) || !isFinite(ba)){
+      bx = STANCE.x*HAND; by = STANCE.y; ba = STANCE.ang*HAND;
+      Bat.stroke = null;
+    }
+    if(!isFinite(Bat.pose.x) || !isFinite(Bat.pose.y) || !isFinite(Bat.pose.a))
+      Bat.pose = { x:bx, y:by, a:ba };
+
     // eased so a stroke starting or ending never snaps
     Bat.pose.x += (bx - Bat.pose.x) * (st ? 0.55 : 0.12);
     Bat.pose.y += (by - Bat.pose.y) * (st ? 0.55 : 0.12);
