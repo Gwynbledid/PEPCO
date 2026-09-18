@@ -906,39 +906,14 @@ for(let i=0;i<MARKS;i++){
 }
 let markN = 0;
 
-/* WHERE IT IS GOING TO PITCH, before it does.
-
-   Length is the whole of what a batter reads, and on a phone at 20-30fps there
-   is not enough of the ball's flight to read it from: three of your misses last
-   over were on the three fullest deliveries, each one a stroke already committed
-   before the ball had landed.
-
-   So the pitch is marked, from the moment it leaves the hand. Where the ring sits
-   IS the length — close to you is full, away up the pitch is short — and it
-   closes in as the ball falls towards it, so the last thing that happens before
-   the bounce is the ring reaching its size. No text, nothing on the HUD.
-
-   The colour says which stroke the ball is asking for, on one axis the game
-   already understands: cool for a ball to be driven, amber for one to be pulled.
-   That is the same number that decides whether the stroke you play suits the
-   ball, so what you see and what you are scored against cannot drift apart. */
-/* Cyan for a ball to be driven, orange for one to be pulled, and the blend runs
-   through HSL rather than RGB — straight down the middle in RGB the two meet at
-   a beige that is almost exactly the colour of the pitch, so a good length, the
-   one you most need to read, was the one you could not see. Through HSL it
-   passes green and yellow and stays bright the whole way. */
-const DRIVE_COL = new THREE.Color(0x4FC9FF);
-const PULL_COL  = new THREE.Color(0xFF8A1E);
-const markMat2 = new THREE.MeshBasicMaterial({ color:0xFFFFFF, transparent:true, opacity:0,
-                                               side:THREE.DoubleSide });
-const pitchRing = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.33, 24), markMat2);
-pitchRing.rotation.x = -Math.PI/2;
-pitchRing.position.y = 0.02;
-pitchRing.visible = false;
-scene.add(pitchRing);
-
 /* WHAT THE LENGTH IS ASKING FOR, as one number: 0 a ball to drive, 1 a ball to
-   pull. Continuous, because a good length is genuinely both. */
+   pull. Continuous, because a good length is genuinely both.
+
+   There was a ring on the pitch showing where the ball would land, coloured off
+   this number. It went: read off the real flight, the length is coming through
+   well enough to play — an over with no ring at all went 21 off 12 with two sixes
+   and one ball missed — and the ring was answering a question the player had
+   already answered for themselves. The scuff after the bounce stays. */
 const wantCross = len => clamp((len - 4.7)/2.0, 0, 1);
 function pitchMark(x, z){
   const m = marks[markN++ % MARKS];
@@ -1392,7 +1367,6 @@ function newDelivery(){
     vyUp: (targetY - BALL_R)/t2 + 0.5*g*t2,       // solved back from where it has to arrive
     bounced: false,
     pitchZ, short,
-    pitchX: 0.28 + ((targetX - 0.28)/T) * t1,     // where the mark goes
   };
   trailBuf.length = 0;
 }
@@ -2191,19 +2165,6 @@ function loop(now){
   }else{
     ball.visible = trail.visible = false;
   }
-
-  /* the mark on the pitch, closing as the ball falls towards it */
-  const inc = G.ball && G.ball.state === 'incoming' && !G.ball.bounced;
-  if(inc){
-    const k = clamp(G.ball.t / Math.max(G.ball.bounceAt, 1e-3), 0, 1);
-    pitchRing.visible = true;
-    pitchRing.position.x = G.ball.pitchX;
-    pitchRing.position.z = G.ball.pitchZ;
-    const sc = lerp(2.4, 1.0, k*k);
-    pitchRing.scale.set(sc, sc, 1);
-    markMat2.opacity = 0.18 + 0.52*k;
-    markMat2.color.copy(DRIVE_COL).lerpHSL(PULL_COL, wantCross(-G.ball.pitchZ));
-  }else pitchRing.visible = false;
 
   /* the tracker, counting with the ball */
   const tr = $('tracker');
