@@ -237,9 +237,9 @@ const MODEL = {
 // ballMs / hitMs are the important half: a slow phone gets a fairer game,
 // not just an uglier one.
 const TIERS = {
-  smooth:   { model:'lite', inputW:192, stride:2, dpr:1.00, shadows:false, ballMs:1500, hitMs:190 },
-  balanced: { model:'lite', inputW:256, stride:1, dpr:1.25, shadows:false, ballMs:1200, hitMs:150 },
-  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:120 },
+  smooth:   { model:'lite', inputW:192, stride:2, dpr:1.00, shadows:false, ballMs:1500, hitMs:260 },
+  balanced: { model:'lite', inputW:256, stride:1, dpr:1.25, shadows:false, ballMs:1200, hitMs:220 },
+  quality:  { model:'full', inputW:320, stride:1, dpr:1.60, shadows:true,  ballMs: 980, hitMs:180 },
 };
 const TIER_ORDER = ['smooth','balanced','quality'];
 /* The gap between balls is however long the fielding takes, floored at the old
@@ -730,9 +730,48 @@ function throwBack(x, z){
 }
 function clearThrow(){ ret = null; retBall.visible = false; }
 
+/* A wicket, celebrated. Everyone who is not already busy turns and comes in a
+   few metres with their arm up — bowl_arm is a figure with one arm straight
+   above the head, which is the only thing on the sheet that reads as a
+   celebration, and it works for all eleven of them. The bowler runs in further
+   and faster than anybody, which is about right.
+
+   The fielder who took the catch is left alone: he is holding it up, and that is
+   his celebration. */
+const CHEER_MS = 2200;
+let cheer = null;
+function celebrate(kind){
+  cheer = { t0: performance.now(), kind };
+}
+function tickCheer(now){
+  if(!cheer) return false;
+  const k = (now - cheer.t0)/CHEER_MS;
+  if(k >= 1){
+    cheer = null;
+    for(const f of fielders) if(!f.userData.chase){
+      f.position.set(f.userData.home.x, 0, f.userData.home.z);
+      setPose(f, f.userData.base);
+    }
+    return false;
+  }
+  // in for the first third, arms up, then back
+  const e  = k < 0.34 ? k/0.34 : 1 - (k - 0.34)/0.66;
+  const up = Math.abs(Math.sin(now/150*Math.PI)) * 0.14;      // jumping on the spot
+  for(const f of fielders){
+    const u = f.userData;
+    if(u.chase) continue;                                     // he has the ball, leave him
+    f.position.x = u.home.x * (1 - 0.30*e);
+    f.position.z = u.home.z * (1 - 0.30*e);
+    f.position.y = up * (k < 0.34 ? e : 1);
+    if(u.pose !== 'bowl_arm') setPose(f, 'bowl_arm');
+  }
+  return true;
+}
+
 // nobody is left mid-dive from the last innings
 function resetField(){
   clearThrow();
+  cheer = null;
   for(const m of marks){ m.visible = false; m.material.opacity = 0; }
   for(const f of fielders){
     f.userData.chase = null;
@@ -994,6 +1033,8 @@ const Bat = {
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
   prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
   bodyX:0, bodyY:1.30, shoulderW:STANCE_W, rawShoulderW:0.50, scale:1, hist:[],
+  poseDt:0.045,             // measured seconds between pose results, smoothed
+  lastSeg:null,             // where the blade was at the previous pose
 };
 
 function mapToWorld(nx, ny){
@@ -1056,6 +1097,9 @@ function updateBat(lm, now, dt){
   // a guess that drifts with their torso. Off-frame wrists are not a bat.
   if(!inFrame(lw) || !inFrame(rw)){ loseTrack('wrists off-frame'); return; }
   Diag.batWhy = '';
+  // where the blade was before this pose replaced it — contact is tested against
+  // the path between the two, not against either end of it
+  Bat.lastSeg = Bat.ok ? { gx:Bat.grip.x, gy:Bat.grip.y, tx:Bat.tip.x, ty:Bat.tip.y } : null;
 
   // the player's own body is the ruler for where "off" and "on" are
   const ls = lm[L_SHO], rs = lm[R_SHO];
@@ -1254,10 +1298,71 @@ function segDist(px,py, ax,ay, bx,by){
    62-degree leg-side bias that no amount of gain could spread, and the reason
    nothing could be played late enough to go behind square. */
 
+/* HOW WIDE THE WINDOW HAS TO BE.
+
+   At quality the window was 120ms — plus and minus 60 — while the full model on
+   a mid-range phone returns a pose every 70 to 100ms. One or two samples land
+   inside it, and if the bat is between samples at the moment that matters it was
+   never seen at all: the swing happened and the game has no frame of it.
+
+   The window is therefore never narrower than a couple of pose intervals,
+   measured, not assumed. A phone that slows down gets a wider window without
+   anyone choosing a tier, which is what the tier table was always trying to do
+   by hand. Capped so it cannot become a free hit. */
+const WIN_CAP = 0.150;                                  // 300ms wide, absolute limit
+function hitWindow(){
+  return clamp(Math.max(TIERS[G.tier].hitMs/2000, Bat.poseDt*1.8), 0.05, WIN_CAP);
+}
+
+/* THE BLADE BETWEEN TWO CAMERA FRAMES.
+
+   Pose returns every 70 to 100ms on a mid-range phone. A blade crossing the line
+   of the ball at 9 m/s covers most of a metre in that time and is 0.11m wide, so
+   the game saw it well to one side of the ball and then well to the other, and
+   never on it. Against a simulated phone that is 57% of deliveries connecting at
+   a 70ms pose cadence and 39% at 100ms — and widening the timing window barely
+   moves it, because the window only says WHEN to look. There was nothing there
+   to see.
+
+   Contact is therefore tested against the path the bat took since the last pose.
+   Samples are spaced about 0.12m along it, comfortably inside the 0.17m a ball
+   and a blade are worth together.
+
+   A jump bigger than a real swing is not a path, it is a tracking gap, and
+   sweeping one would invent contact out of nothing — so those are not swept. */
+const MAX_SWEEP = 1.6;                                  // metres in one pose interval
+function sweptDist(bx, by){
+  let best = segDist(bx, by, Bat.grip.x, Bat.grip.y, Bat.tip.x, Bat.tip.y);
+  const L = Bat.lastSeg;
+  if(!L) return best;
+  const travel = Math.max(Math.hypot(Bat.grip.x - L.gx, Bat.grip.y - L.gy),
+                          Math.hypot(Bat.tip.x  - L.tx, Bat.tip.y  - L.ty));
+  if(travel > MAX_SWEEP) return best;
+  const steps = clamp(Math.ceil(travel/0.12), 1, 8);
+  for(let i = 1; i <= steps; i++){
+    const w = i/(steps + 1);
+    const r = segDist(bx, by,
+      lerp(L.gx, Bat.grip.x, w), lerp(L.gy, Bat.grip.y, w),
+      lerp(L.tx, Bat.tip.x,  w), lerp(L.ty, Bat.tip.y,  w));
+    if(r.d < best.d) best = r;
+  }
+  return best;
+}
+
 function tryHit(b){
-  const t = TIERS[G.tier];
-  const win = t.hitMs/2000;                             // window is in ms, never in frames
+  const win = hitWindow();
   const remaining = b.T - b.t;                          // seconds until the ball reaches the bat
+
+  /* Diagnostics only, over a much wider span than the window: how close the bat
+     ever came to this ball and when. A miss that logs "bat 0.41m away" is a
+     different bug from one that logs "0.06m away, 140ms early", and until both
+     were in the per-ball table there was no way to tell them apart. */
+  if(Math.abs(remaining) < 0.30 && Bat.ok){
+    const pr = sweptDist(b.x, b.y);
+    if(!b.probe || pr.d < b.probe.d)
+      b.probe = { d:pr.d, remaining, low:Math.min(Bat.grip.y, Bat.tip.y),
+                  high:Math.max(Bat.grip.y, Bat.tip.y) };
+  }
 
   if(remaining < -win){                                 // window shut
     if(b.near){ playShot(b, b.near.u, b.near.remaining); return true; }
@@ -1265,7 +1370,7 @@ function tryHit(b){
   }
   if(remaining > win || !Bat.ok) return false;          // not open yet, or no bat to swing
 
-  const { d, u } = segDist(b.x, b.y, Bat.grip.x, Bat.grip.y, Bat.tip.x, Bat.tip.y);
+  const { d, u } = sweptDist(b.x, b.y);
   if(d > BALL_R + BAT_HALF_W + 0.03) return false;
 
   if(!b.near || d < b.near.d){
@@ -1357,7 +1462,7 @@ function playShot(b, u, remaining){
   const t = TIERS[G.tier];
 
   const power  = clamp(Bat.tipSpeed / 12, 0, 1);
-  const timing = 1 - clamp(Math.abs(remaining) / (t.hitMs/2000), 0, 1);
+  const timing = 1 - clamp(Math.abs(remaining) / hitWindow(), 0, 1);
   const sweet  = 1 - clamp(Math.abs(u - 0.74) / 0.42, 0, 1);
   const quality = 0.22 + 0.78 * (0.42*timing + 0.58*sweet);
   // Range set so a well struck lofted shot can reach the rope: at 7 + 21 a hard,
@@ -1373,7 +1478,7 @@ function playShot(b, u, remaining){
   // 0.22 of its length from centre, so using the midpoint meant middling a ball
   // at your own body came out 29 degrees to leg instead of straight.
   const batX   = Bat.grip.x + 0.74 * (Bat.tip.x - Bat.grip.x);
-  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, t.hitMs/2000);
+  const line   = shotLine(batX, Bat.bodyX, Bat.shoulderW, u, remaining, hitWindow());
 
   /* An edge is not an aimed shot. Catch the ball off the toe or right down by
      the splice and it can fly off behind square — past the keeper, or away
@@ -1445,8 +1550,8 @@ function playShot(b, u, remaining){
   const distRuns = total > 44 ? 3 : total > 26 ? 2 : total > 12 ? 1 : 0;
 
   let runs, label, sub, out = false;
-  if(taken)                    { runs=0; out=true; label='CAUGHT'; sub='Taken at ' + who; }
-  else if(carry >= BOUNDARY_R) { runs=6; label='SIX'; sub='All the way'; }
+  if(taken)                    { runs=0; out=true; label='CAUGHT'; sub='Taken at ' + who; celebrate('caught'); }
+  else if(carry >= BOUNDARY_R) { runs=6; label='SIX'; sub=Math.round(carry) + ' metres, and still climbing over ' + who; }
   else if(total >= BOUNDARY_R) { runs=4; label='FOUR'; sub='Beats ' + who + ' to the rope'; }
   else {
     runs  = Math.min(gapRuns, distRuns);
@@ -1503,6 +1608,7 @@ function playShot(b, u, remaining){
   G.runs += runs;
   if(out) G.wkts++;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
+                 len:-(b.pitchZ || 0), win:hitWindow(),
                  lateral:line.lateral, timing:line.timing, blade:line.blade,
                  across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
@@ -1523,10 +1629,17 @@ function missed(b){
   const bowled = Math.abs(b.x - (b.aim || 0)) < 0.20 && b.y < 0.78;
   if(bowled){
     G.wkts++;
+    celebrate('bowled');
     showCallout('BOWLED', 'Through the gate', '#FF2D7A');
   }else{
     showCallout('Dot', b.y > 1.6 ? 'Left it alone' : 'Played and missed', '#F2F6F4');
   }
+  /* A miss is a row in the table too. Six of twelve balls were being missed and
+     the log only ever recorded the six that were hit, so there was nothing to
+     read: whether the bat was nowhere near, or right on it and 140ms out, or the
+     ball was under the toe, was a guess every time. */
+  G.wagon.push({ miss:true, bowled, len:-(b.pitchZ || 0), ballY:b.y,
+                 probe:b.probe || null, win:hitWindow(), out:bowled });
   b.state = 'dead';
   endBall();
 }
@@ -1534,7 +1647,9 @@ function missed(b){
 function endBall(){
   G.balls++;
   updateHud();
-  G.gapMs  = clamp((G.fieldUntil || 0) - performance.now(), GAP_MIN, GAP_MAX);
+  // a wicket needs room for the celebration and a walk back on top of it
+  const floor = cheer ? CHEER_MS + WALK_MS + RUNUP_MS : GAP_MIN;
+  G.gapMs  = clamp((G.fieldUntil || 0) - performance.now(), floor, GAP_MAX);
   G.nextAt = performance.now() + G.gapMs;
   if(G.balls >= BALLS_PER_INNINGS || G.wkts >= MAX_WKTS){
     setTimeout(finishInnings, 1500);
@@ -1573,6 +1688,7 @@ function drawWagon(){
   g.fillRect(cx - S*0.022, cy - R*0.46, S*0.044, R*0.46);
 
   for(const sh of G.wagon){
+    if(sh.miss) continue;                 // nothing left the bat, so nothing to draw
     const r = clamp(sh.d / BOUNDARY_R, 0.08, 1) * R;
     const x = cx + Math.sin(sh.a) * r;
     const y = cy - Math.cos(sh.a) * r;
@@ -1587,26 +1703,44 @@ function drawWagon(){
   g.fillStyle = '#F2F6F4';
   g.beginPath(); g.arc(cx, cy, 3.4, 0, 7); g.fill();
 
-  const n = r => G.wagon.filter(s => s.runs === r).length;
-  const scoring = G.wagon.filter(s => s.runs > 0).length;
-  const beaten  = G.balls - G.wagon.length;
+  const shots   = G.wagon.filter(s => !s.miss);        // misses are rows in the log, not lines
+  const n = r => shots.filter(s => s.runs === r).length;
+  const scoring = shots.filter(s => s.runs > 0).length;
+  const beaten  = G.wagon.filter(s => s.miss).length;
+  const sixes   = shots.filter(s => s.runs === 6);
+  const biggest = sixes.length ? Math.max(...sixes.map(s => s.carry)) : 0;
   const log = document.getElementById('wagonLog');
   log.hidden = !DEBUG;
   if(DEBUG){
     const f = (v, w) => (v >= 0 ? '+' : '') + v.toFixed(2).padStart(w);
-    log.textContent = 'ball  line latrl timing  rise  loft  apex hang carry  shot\n' +
-      G.wagon.map((s, i) =>
-        String(i+1).padStart(3) + ' ' +
-        ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
-        f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.rise,5) + ' ' +
-        s.loft.toFixed(2).padStart(5) + ' ' + s.apex.toFixed(1).padStart(5) + ' ' +
-        s.hang.toFixed(1).padStart(4) + ' ' + s.carry.toFixed(0).padStart(5) + '  ' + s.shot +
-        (s.out ? '  OUT' : '')
-      ).join('\n');
+    log.textContent = 'ball  len   ht  line latrl timing  rise  loft  apex carry  shot\n' +
+      G.wagon.map((s, i) => {
+        const head = String(i+1).padStart(3) + ' ' +
+                     s.len.toFixed(1).padStart(4) + ' ' + s.ballY.toFixed(2).padStart(5) + ' ';
+        if(s.miss){
+          // early/late as a share of the window, so >1 means outside it entirely
+          const p = s.probe;
+          const off = p ? (-p.remaining/s.win) : null;
+          return head + '  -     -  ' + (off === null ? '   -' : f(off,5)) +
+                 '      -     -     -     -  ' +
+                 (s.bowled ? 'BOWLED' : 'MISSED') +
+                 (p ? '  bat ' + p.d.toFixed(2) + 'm away, blade ' +
+                      p.low.toFixed(2) + '-' + p.high.toFixed(2)
+                    : '  no bat tracked');
+        }
+        return head +
+          ((s.a*57.3 >= 0 ? '+' : '') + (s.a*57.3).toFixed(0)).padStart(5) + ' ' +
+          f(s.lateral,5) + ' ' + f(s.timing,5) + ' ' + f(s.rise,5) + ' ' +
+          s.loft.toFixed(2).padStart(5) + ' ' + s.apex.toFixed(1).padStart(5) + ' ' +
+          s.carry.toFixed(0).padStart(5) + '  ' + s.shot +
+          (s.runs === 6 ? '  SIX ' + Math.round(s.carry) + 'm' : '') +
+          (s.out ? '  OUT' : '');
+      }).join('\n');
   }
 
   document.getElementById('wagonKey').innerHTML = [
-    ['#FFB020', n(6) + (n(6) === 1 ? ' six' : ' sixes')],
+    ['#FFB020', n(6) + (n(6) === 1 ? ' six' : ' sixes') +
+                (biggest ? ' \u00b7 biggest ' + Math.round(biggest) + 'm' : '')],
     ['#FF2D7A', n(4) + (n(4) === 1 ? ' four' : ' fours')],
     ['#8FE8BE', (n(1)+n(2)+n(3)) + ' run-scoring'],
     ['rgba(242,246,244,.30)', n(0) + ' off the bat, no run'],
@@ -1652,7 +1786,7 @@ function stepPhysics(dt){
     // A miss is the window closing, not the ball reaching an arbitrary depth. The
     // old test fired about 60ms past arrival while the window ran to 95ms, so the
     // late third of it — everything behind square on the off — was unreachable.
-    if(b.t - b.T > TIERS[G.tier].hitMs/2000) missed(b);
+    if(b.t - b.T > hitWindow()) missed(b);
   }else if(b.state === 'hit'){
     b.vy -= g*dt;
     b.x += b.vx*dt; b.y += b.vy*dt; b.z += b.vz*dt;
@@ -1707,7 +1841,9 @@ function loop(now){
     Diag.pose = !!lm;
     Diag.visMin = lm ? Math.min(lm[L_WRIST].visibility ?? 1, lm[R_WRIST].visibility ?? 1) : 0;
     Diag.wrists = Diag.visMin > 0.35;
-    updateBat(lm, now, (now - poseT)/1000 || dt);
+    const pdt = (now - poseT)/1000 || dt;
+    if(poseT && pdt > 0 && pdt < 0.5) Bat.poseDt = Bat.poseDt*0.88 + pdt*0.12;
+    updateBat(lm, now, pdt);
     poseT = now;
     if(!document.getElementById('preview').hidden) drawPreview(lm);
     if(benchmark) benchmark.samples++;
@@ -1832,9 +1968,12 @@ function loop(now){
 
   /* Players are flat quads, so they turn to face the eye — about the y axis
      only, so they stay stood on the ground rather than tipping over. */
+  const cheering = tickCheer(now);
   for(const f of fielders){
     const u = f.userData;
     const c = u.chase;
+    if(cheering && !c){ f.rotation.y = Math.atan2(camera.position.x - f.position.x,
+                                                  camera.position.z - f.position.z); continue; }
     if(c){
       const t  = now - c.t0;
       const t0 = c.waitMs, t1 = t0 + c.outMs, t2 = t1 + c.gatherMs,
@@ -1910,7 +2049,13 @@ function loop(now){
        a boundary and sprint in after a dot; and holding the ball at his mark is
        the pause itself. */
     const toBall = G.nextAt - now;
-    if(toBall <= RUNUP_MS){                               // in off his mark
+    if(cheer){                                            // charging in, arm aloft
+      const k = (now - cheer.t0)/CHEER_MS;
+      const e = k < 0.34 ? k/0.34 : 1 - (k - 0.34)/0.66;
+      bowlPose = 'bowl_arm';
+      bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z + 9.0, e);
+      bowler.position.y = Math.abs(Math.sin(now/150*Math.PI)) * 0.16 * e;
+    }else if(toBall <= RUNUP_MS){                         // in off his mark
       const r = 1 - toBall/RUNUP_MS;
       bowler.position.z = lerp(MARK_Z, RELEASE_Z + 0.3, r*r*(3 - 2*r));   // builds up
       if(r < 0.62){
