@@ -100,6 +100,26 @@
   #diag{position:absolute;left:16px;bottom:12px;font-size:11px;color:rgba(242,246,244,.38);
     font-variant-numeric:tabular-nums;pointer-events:none}
   #settingsBtn{position:absolute;right:12px;bottom:12px;padding:9px 16px;font-size:13px;pointer-events:auto}
+  /* ── shot tracker: the distance, live, while the ball is still in the air ──
+     The callout flashes for a second at the moment of contact, which is before
+     the ball has gone anywhere — so a six's distance was gone by the time anyone
+     looked up at it. This counts with the ball and stays until it lands. */
+  #tracker{position:absolute;right:0;top:12%;padding:8px 16px 9px;text-align:right;
+    pointer-events:none;text-shadow:0 4px 24px rgba(0,0,0,.75);transition:color .2s}
+  #tracker[hidden]{display:none}
+  #tracker b{font:800 clamp(38px,8vw,62px)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+  #tracker small{font-size:20px;font-weight:700;margin-left:3px;opacity:.75}
+  #tracker i{display:block;font-size:13px;font-weight:700;font-style:normal;
+    letter-spacing:.09em;text-transform:uppercase;opacity:.8;margin-top:3px}
+  #tracker.six{color:var(--amber)}
+  #tracker.four{color:#FF2D7A}
+
+  .hands{display:flex;gap:8px}
+  .hands .hand{flex:1;padding:11px 8px;border-radius:11px;font-size:14px;font-weight:700;
+    background:rgba(242,246,244,.08);color:var(--dim);border:1px solid rgba(242,246,244,.14)}
+  .hands .hand.on{background:var(--amber);color:#12181A;border-color:var(--amber)}
+
   @media (prefers-reduced-motion:reduce){#callout.show{animation-duration:.01s;opacity:1}}
 
   /* ── diagnostics: readable from two metres, never in the way of a tap ── */
@@ -136,6 +156,7 @@
   </div>
   <div id="preview" hidden><canvas id="pv" width="264" height="198"></canvas></div>
   <div id="callout"></div>
+  <div id="tracker" hidden><b id="trDist">0</b><small>m</small><i id="trNote"></i></div>
   <div id="diag" hidden></div>
   <div id="dbgPanel" hidden></div>
   <button id="dbgToggle" hidden>dbg</button>
@@ -166,6 +187,10 @@
     </div>
     <div class="gauge"><i id="benchBar"></i></div>
     <p id="benchMsg" style="font-size:13px"></p>
+    <div class="hands">
+      <button class="hand" data-hand="right">Right-handed</button>
+      <button class="hand" data-hand="left">Left-handed</button>
+    </div>
     <button id="playBtn" hidden>Start innings</button>
   </section>
 
@@ -177,6 +202,12 @@
       <button class="tier" data-tier="smooth">Smooth</button>
       <button class="tier" data-tier="balanced">Balanced</button>
       <button class="tier" data-tier="quality">Quality</button>
+    </div>
+    <p style="margin-top:14px">Which way round do you bat? This sets the field and
+      names your shots — it does not change how your swing is tracked.</p>
+    <div class="hands">
+      <button class="hand" data-hand="right">Right-handed</button>
+      <button class="hand" data-hand="left">Left-handed</button>
     </div>
     <div class="row" style="margin-top:12px">
       <button id="closeSet">Back to the game</button>
@@ -270,7 +301,13 @@ const BAT_LEN     = 0.90;   // metres — fixed, never scaled to the real stick
    middle of the screen however hard it was swung. */
 const STANCE_W    = 0.62;
 const BAT_HALF_W  = 0.055;
-const BAT_HOLD_MS = 200;    // how long the bat keeps moving after pose loses the wrists
+/* How long the bat keeps going after pose loses the wrists. Pose drops hardest
+   during the fastest part of a swing — motion blur, and hands that leave the
+   frame at the end of the arc — and a pull is the worst of the lot. At 200ms the
+   bat was still blinking out in the middle of the stroke. It now coasts for most
+   of a second, slowing, and fades over the last third rather than vanishing. */
+const BAT_HOLD_MS  = 620;
+const BAT_STALE_MS = 260;   // past this the bat is drawn but can no longer strike
 const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisible on a phone
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
@@ -667,17 +704,48 @@ const FIELD = [
   { name:'fine leg',   deg:-142, dist: 32.0, pose:'field_alert'   },
 ];
 
+/* WHICH WAY ROUND THE BATTER STANDS.
+
+   The angles above are a right-hander's field. For a left-hander the whole thing
+   mirrors: what is cover for one is midwicket for the other, and a ball struck to
+   the same side of the ground is a pull for one and a square drive for the other.
+
+   Nothing about the tracking changes — the bat is still wherever the hands are —
+   but the game was naming every stroke, and setting every field, as though
+   everyone batted right-handed. */
+const HAND_KEY = 'gully.hand';
+let HAND = 1;                                  // +1 right-handed, -1 left
+try{ if(localStorage.getItem(HAND_KEY) === 'left') HAND = -1; }catch(e){}
+
 const fielders = FIELD.map(f => {
-  const rad = f.deg * Math.PI/180;
   const m = new THREE.Mesh(poseGeometry(), playerMat);
   setPose(m, f.pose);
-  m.userData.home = { x: Math.sin(rad)*f.dist, z: -Math.cos(rad)*f.dist };
+  m.userData.deg  = f.deg;
+  m.userData.dist = f.dist;
+  m.userData.home = { x:0, z:0 };
   m.userData.name = f.name;
   m.userData.base = f.pose;
-  m.position.set(m.userData.home.x, 0, m.userData.home.z);
   scene.add(m);
   return m;
 });
+
+function applyHand(){
+  for(const m of fielders){
+    const rad = m.userData.deg * HAND * Math.PI/180;
+    m.userData.home.x =  Math.sin(rad) * m.userData.dist;
+    m.userData.home.z = -Math.cos(rad) * m.userData.dist;
+    m.userData.chase = null;
+    m.position.set(m.userData.home.x, 0, m.userData.home.z);
+  }
+}
+function setHand(right){
+  HAND = right ? 1 : -1;
+  try{ localStorage.setItem(HAND_KEY, right ? 'right' : 'left'); }catch(e){}
+  applyHand();
+  for(const b of document.querySelectorAll('.hand'))
+    b.classList.toggle('on', (b.dataset.hand === 'right') === right);
+}
+applyHand();
 
 const bowler = new THREE.Mesh(poseGeometry(), playerMat);
 setPose(bowler, 'bowl_run');
@@ -754,14 +822,16 @@ function tickCheer(now){
     }
     return false;
   }
-  // in for the first third, arms up, then back
+  /* They have to come a long way in to be worth looking at. At 30% the fielders
+     were still 15 to 35 metres out, which on a phone is a handful of pixels with
+     an arm up — the celebration was firing and nobody could see it. */
   const e  = k < 0.34 ? k/0.34 : 1 - (k - 0.34)/0.66;
   const up = Math.abs(Math.sin(now/150*Math.PI)) * 0.14;      // jumping on the spot
   for(const f of fielders){
     const u = f.userData;
     if(u.chase) continue;                                     // he has the ball, leave him
-    f.position.x = u.home.x * (1 - 0.30*e);
-    f.position.z = u.home.z * (1 - 0.30*e);
+    f.position.x = u.home.x * (1 - 0.62*e);
+    f.position.z = u.home.z * (1 - 0.62*e);
     f.position.y = up * (k < 0.34 ? e : 1);
     if(u.pose !== 'bowl_arm') setPose(f, 'bowl_arm');
   }
@@ -820,6 +890,7 @@ const bat = new THREE.Group();
   part(new THREE.CylinderGeometry(0.0235, 0.0235, 0.018, 8), gripMat, -half + 0.925);
 })();
 bat.visible = false;
+let batFade = 1;
 scene.add(bat);
 
 /* A scuff where it pitched. Without it the bounce is invisible: the ball is a
@@ -1215,6 +1286,7 @@ const G = {
   tier:'balanced',
   manualTier:false,
   runs:0, wkts:0, balls:0,
+  track:null, trackUntil:0,  // the live distance readout on a shot worth watching
   gapMs:GAP_MIN,            // how long the current gap between balls is
   fieldUntil:0,             // when the fielder will have finished with it
   wagon:[],                // one entry per shot that found the bat
@@ -1260,6 +1332,7 @@ function newDelivery(){
   const targetX = aim + (Math.random()-0.5)*0.9;
   clearThrow();              // never two balls on the screen at once
   G.fieldUntil = 0;
+  G.track = null;
   const y0 = 1.95;
   const g  = 9.81;
   const t1 = T * full;                            // in the air to the pitch
@@ -1452,7 +1525,7 @@ function classifyShot(line, speed, spin, loft){
   if(speed < 1.2) return 'Defensive push';
   const deg = line.angle * 57.2958;
   const a   = Math.abs(deg);
-  const off = deg >= 0;                        // +x is the off side
+  const off = deg * HAND >= 0;                 // +x is the off side for a right-hander
   if(a < 22) return loft > 0.45 ? 'Lofted drive' : 'Straight drive';
   if(a < 55) return off ? 'Cover drive' : 'On drive';
   return off ? 'Square drive' : 'Pull';
@@ -1605,6 +1678,11 @@ function playShot(b, u, remaining){
                  x: (Bat.grip.x + Bat.tip.x)/2, y: (Bat.grip.y + Bat.tip.y)/2,
                  ang: Math.atan2(Bat.axis.x, -Bat.axis.y) };
 
+  /* What the tracker follows. Set at contact because the outcome is decided at
+     contact, but only shown while the ball is actually travelling — the number
+     itself is measured off the ball, live, not read out of here. */
+  G.track = carry >= 18 || apex > 4
+    ? { runs, six: carry >= BOUNDARY_R, carry, apex, from: Bat.bodyX } : null;
   G.runs += runs;
   if(out) G.wkts++;
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
@@ -1852,25 +1930,34 @@ function loop(now){
     Bat.grip.x += Bat.tipVel.x*dt*0.35; Bat.grip.y += Bat.tipVel.y*dt*0.35;
     Bat.tip.x  += Bat.tipVel.x*dt*0.35; Bat.tip.y  += Bat.tipVel.y*dt*0.35;
   }
-  if(now - Bat.lastSeen > 700) Bat.ok = false;
+  /* Pose drops the wrists hardest during the fastest part of a swing — motion
+     blur, and hands that leave the frame at the end of the arc — and a pull is
+     the worst of the lot. Hiding the bat the instant that happens takes it off
+     the screen on exactly the strokes it matters for.
 
-  /* Pose drops the wrists hardest during a hard swing — motion blur, and hands
-     that leave the frame at the end of the arc. Hiding the bat the instant that
-     happens took it off the screen on exactly the strokes it mattered for, which
-     is what a swing to the leg side looks like when the bat "never moved". Coast
-     it on the last velocity for a fifth of a second instead, decaying, so a
-     dropped frame costs a little smoothness rather than the whole stroke.
-     Contact is untouched: tryHit still needs a tracked bat. */
+     Two separate clocks, which used to be one. HOW LONG THE BAT IS DRAWN is
+     BAT_HOLD_MS, now most of a second, coasting and fading. HOW LONG IT CAN
+     STILL HIT is BAT_STALE_MS, much shorter, because striking a ball with a bat
+     nobody has seen for half a second is inventing a shot. */
+  if(now - Bat.lastSeen > BAT_STALE_MS) Bat.ok = false;
   if(G.phase === 'live'){ Diag.liveFrames++; if(!Bat.ok) Diag.lostFrames++; }
-  const held = !Bat.ok && Bat.lastSeen && now - Bat.lastSeen < BAT_HOLD_MS;
+  const age   = Bat.lastSeen ? now - Bat.lastSeen : Infinity;
+  const shown = age < BAT_HOLD_MS;                  // still worth drawing
+  const held  = shown && !Bat.ok;                   // and coasting on its last speed
   if(held){
     Bat.grip.x += Bat.tipVel.x*dt*0.35; Bat.grip.y += Bat.tipVel.y*dt*0.35;
     Bat.tip.x  += Bat.tipVel.x*dt*0.35; Bat.tip.y  += Bat.tipVel.y*dt*0.35;
     Bat.tipVel.x *= 0.93; Bat.tipVel.y *= 0.93;
   }
+  // fade over the last third of the hold instead of blinking out
+  const fade = shown ? clamp((BAT_HOLD_MS - age)/(BAT_HOLD_MS*0.35), 0, 1) : 1;
+  if(batFade !== fade){
+    batFade = fade;
+    for(const m of [batMat, gripMat, caneMat]){ m.transparent = fade < 1; m.opacity = fade; }
+  }
 
   // --- bat mesh ---
-  if(G.phase === 'live' && (Bat.ok || held || Bat.follow)){
+  if(G.phase === 'live' && (shown || Bat.follow)){
     bat.visible = puck.visible = true;
     bat.position.set((Bat.grip.x+Bat.tip.x)/2, (Bat.grip.y+Bat.tip.y)/2, HIT_PLANE_Z);
     bat.rotation.z = Math.atan2(Bat.axis.x, -Bat.axis.y);
@@ -1938,6 +2025,29 @@ function loop(now){
     ball.visible = trail.visible = false;
   }
 
+  /* the tracker, counting with the ball */
+  const tr = $('tracker');
+  const flying = G.ball && G.ball.state === 'hit';
+  if(G.track && (flying || now < G.trackUntil)){
+    /* A six is taken off the screen at the rope plus eight metres, so counting
+       the live ball stopped every six dead on 70m however far it was actually
+       struck. Once it is gone the number runs on to where it would have pitched,
+       which is the figure the shot was worth. */
+    const d = flying ? Math.hypot(G.ball.x - (G.track.from || 0), G.ball.z)
+                     : (G.track.shown || 0) + 110*dt;
+    G.track.shown = Math.min(Math.max(G.track.carry, G.track.shown || 0),
+                             Math.max(G.track.shown || 0, d));
+    tr.hidden = false;
+    tr.className = G.track.six ? 'six' : G.track.runs >= 4 ? 'four' : '';
+    $('trDist').textContent = Math.round(G.track.shown);
+    $('trNote').textContent = G.track.six ? 'six \u00b7 ' + G.track.apex.toFixed(0) + 'm high'
+                            : G.track.runs >= 4 ? 'four'
+                            : G.track.apex.toFixed(0) + 'm high';
+    if(flying) G.trackUntil = now + 2000;          // lingers after it lands
+  }else{
+    tr.hidden = true;
+  }
+
   if(benchmark) tickBenchmark(now);
   if(G.phase === 'calib') tickChecks();
 
@@ -1959,6 +2069,8 @@ function loop(now){
   let lx2 = camera.position.x, ly2 = 1.05, lz2 = -16;
   if(G.ball && G.ball.state === 'hit'){
     lx2 = G.ball.x; ly2 = Math.max(G.ball.y, 0.35); lz2 = G.ball.z;
+  }else if(cheer){                       // you watch them come up, same as you would
+    lx2 = bowler.position.x; ly2 = 1.5; lz2 = bowler.position.z;
   }
   const k = G.ball && G.ball.state === 'hit' ? 0.16 : 0.055;   // snaps onto it, drifts back
   look.x += (lx2 - look.x)*k;
@@ -2052,8 +2164,10 @@ function loop(now){
     if(cheer){                                            // charging in, arm aloft
       const k = (now - cheer.t0)/CHEER_MS;
       const e = k < 0.34 ? k/0.34 : 1 - (k - 0.34)/0.66;
+      // and the bowler comes right down the pitch at you, where he is a figure
+      // rather than a speck
       bowlPose = 'bowl_arm';
-      bowler.position.z = lerp(RELEASE_Z + 1.9, RELEASE_Z + 9.0, e);
+      bowler.position.z = lerp(RELEASE_Z + 1.9, -4.2, e);
       bowler.position.y = Math.abs(Math.sin(now/150*Math.PI)) * 0.16 * e;
     }else if(toBall <= RUNUP_MS){                         // in off his mark
       const r = 1 - toBall/RUNUP_MS;
@@ -2286,6 +2400,10 @@ $('recalBtn').addEventListener('click', ()=>{
 document.querySelectorAll('.tier').forEach(b=>{
   b.addEventListener('click', ()=>{ G.manualTier = true; applyTier(b.dataset.tier, true); });
 });
+document.querySelectorAll('.hand').forEach(b=>{
+  b.addEventListener('click', ()=> setHand(b.dataset.hand === 'right'));
+});
+setHand(HAND > 0);                       // paint the stored choice onto both panels
 $('againBtn').addEventListener('click', ()=>{
   hideAll(); hud(true);
   G.phase = 'live';
