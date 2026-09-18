@@ -307,6 +307,10 @@ const BAT_HALF_W  = 0.055;
    bat was still blinking out in the middle of the stroke. It now coasts for most
    of a second, slowing, and fades over the last third rather than vanishing. */
 const BAT_STALE_MS = 260;   // past this, pose is too old to start a stroke from
+const SWING_START = 0.110;   // hand travel in 100ms that means a stroke has begun
+const SWING_MIN   = 0.150;   // and what it must reach to be a shot rather than a leave
+const SWING_SPAN  = 0.42;    // travel across, in world units, for a full-width shot
+const SWING_LAG   = 0.100;   // measured: a swing crosses the threshold 84-114ms before contact
 const BALL_R      = 0.085;  // oversized on purpose; a real 36mm ball is invisible on a phone
 const BOUNDARY_R  = 62;
 const HIT_PLANE_Z = 0;
@@ -447,6 +451,8 @@ function paintDiag(){
             '  reach ' + (Bat.bodyX !== undefined ? ((Bat.grip.x + 0.74*(Bat.tip.x-Bat.grip.x) - Bat.bodyX)/(STANCE_W*0.60)).toFixed(2) : '-'));
   rows.push('bat low ' + Math.min(Bat.grip.y, Bat.tip.y).toFixed(2) +
             '  high ' + Math.max(Bat.grip.y, Bat.tip.y).toFixed(2));
+  rows.push('window ' + (hitWindow()*1000).toFixed(0) + 'ms  lag ' +
+            (SWING_LAG*1000).toFixed(0) + 'ms');
   rows.push('stance x' + Bat.scale.toFixed(2) + ' (shoulders ' + Bat.rawShoulderW.toFixed(2) + ')' +
             '  lost ' + (Diag.liveFrames ? Math.round(100*Diag.lostFrames/Diag.liveFrames) : 0) + '% of frames');
   rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
@@ -901,10 +907,10 @@ const skinMat  = new THREE.MeshLambertMaterial({ color:0xC98F63 });
 const gloveMat = new THREE.MeshLambertMaterial({ color:0xEDEFE9 });
 const arms = [0, 1].map(() => {
   const g = new THREE.Group();
-  const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.052, 1, 7), skinMat);
+  const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.048, 1, 7), skinMat);
   fore.position.y = 0.5;                    // unit long, pivot at the shoulder end
   g.add(fore);
-  const glove = new THREE.Mesh(new THREE.SphereGeometry(0.062, 8, 6), gloveMat);
+  const glove = new THREE.Mesh(new THREE.SphereGeometry(0.054, 8, 6), gloveMat);
   g.add(glove);
   g.userData.fore = fore; g.userData.glove = glove;
   g.visible = false;
@@ -1151,7 +1157,7 @@ const Bat = {
   lastSeg:null,             // where the blade was at the previous pose
   stroke:null,              // the stroke being played, if any
   lastMag:0,                // last swing magnitude, for interpolating the crossing
-  pose:{ x:0.26, y:0.84, a:0.72 },   // where the bat is drawn, eased
+  pose:{ x:0.26, y:1.02, a:0.72 },   // where the bat is drawn, eased
 };
 
 function mapToWorld(nx, ny){
@@ -1469,16 +1475,12 @@ function hitWindow(){
    bat in the direction the blade was facing.
    ═══════════════════════════════════════════════════════════════ */
 
-const SWING_START = 0.075;   // hand travel in 100ms that means a stroke has begun
-const SWING_MIN   = 0.150;   // and what it must reach to be a shot rather than a leave
-const SWING_SPAN  = 0.42;    // travel across, in world units, for a full-width shot
-const SWING_LAG   = 0.110;   // from the stroke starting to the bat reaching the ball
 
 /* THE STANCE. Where the bat lives when you are not playing at anything: down by
    the back foot, toe near the ground, angled across. It no longer moves with
    your hands at all, which is the whole point — a bat that twitches with every
    landmark is a bat you cannot look away from. */
-const STANCE = { x: 0.26, y: 0.84, ang: 0.72 };
+const STANCE = { x: 0.26, y: 1.02, ang: 0.72 };
 
 /* A stroke, built from the swing rather than picked out of a table of poses.
 
@@ -1531,31 +1533,77 @@ function tryHit(b){
 
      Direction is read at the contact moment rather than at the start, because
      the first 30mm of a pull and a drive look much alike. */
-  if(Math.abs(remaining) < 0.42 && Bat.ok){
+  if(Math.abs(remaining) < 0.60 && Bat.ok){
     const sw  = swingInto(100);
     const mag = Math.hypot(sw.dx, sw.dy);
+    const prev = Bat.lastMag;
+    const frac = prev < SWING_START && mag > prev ? (SWING_START - prev)/(mag - prev) : 1;
+    const lead = (1 - frac) * Bat.poseDt;              // it began this long ago
+    const contactIn = remaining + lead - SWING_LAG;    // when this stroke would arrive
 
-    if(!b.swing && mag > SWING_START){
-      // where between the last sample and this one it crossed
-      const prev = Bat.lastMag;
-      const frac = prev < SWING_START && mag > prev ? (SWING_START - prev)/(mag - prev) : 1;
-      const lead = (1 - frac) * Bat.poseDt;            // it began this long ago
-      b.swing = { t0: b.t - lead, mag, dx:sw.dx, dy:sw.dy,
-                  remaining: remaining + lead - SWING_LAG,
-                  handY: Bat.mid ? Bat.mid.y : Bat.grip.y };
+    /* A BACKLIFT IS NOT A STROKE, AND A STROKE IS NOT LATCHED TWICE.
+
+       Latching on the first thing that moved consumed the ball's one swing about
+       a third of a second before it arrived — measured over a soak with a
+       backlift in front of every delivery, every ball latched 307 to 314ms early
+       against a window of 95. The stroke that followed was ignored, which on a
+       phone reads as the bat refusing to swing at all once you stop standing
+       perfectly still between deliveries.
+
+       A crossing is a RISE through the threshold from below, and each crossing
+       replaces the last. That separates a backlift from a stroke without needing
+       to know which is which: the hands go up, the reading falls back under as
+       they turn, and the downswing crosses again.
+
+       There is no second clause. I tried one — a rescue that re-latched on any
+       substantially bigger motion, for a wind-up that never dips back under the
+       threshold — and it is unsound however it is fenced: it re-dates the stroke
+       to NOW, with no crossing to justify the new date, so it walks the latch
+       forward until it happens to land inside the window. That is a cheat, and it
+       measured as one: a swing played 250ms early came back as a shot 44 to 59
+       times in 60 with the rescue in, and it took three attempts at fencing it
+       before I accepted the idea was wrong rather than mistuned.
+
+       A crossing, or nothing. The cost is that a wind-up flowing straight into a
+       stroke with no pause is dated from the wind-up and reads early — which is
+       honest, and the arming above means the hands only have to drop under the
+       threshold once in 600ms for it not to happen. */
+    /* A crossing only counts once the hands have been seen BELOW the threshold on
+       this ball. Otherwise a swing already under way when the watch opens is
+       treated as one just beginning, and dated from the wrong moment: a stroke
+       played 250ms early came back as a shot 45 times in 60 that way. */
+    if(mag < SWING_START) b.armed = true;
+    const crossed  = b.armed && prev < SWING_START && mag >= SWING_START;
+    if(crossed && Math.abs(contactIn) < 0.30){
+      b.swing = { t0: b.t - lead, mag, dx:sw.dx, dy:sw.dy, remaining: contactIn,
+                  peakT: b.t, handY: Bat.mid ? Bat.mid.y : Bat.grip.y };
       startStroke(sw, b);                              // the bat moves when YOU do
     }
     if(b.swing){
-      if(mag > b.swing.mag) b.swing.mag = mag;         // how hard, over the whole stroke
+      if(mag > b.swing.mag){ b.swing.mag = mag; b.swing.peakT = b.t; }
       if(Math.abs(b.t - (b.swing.t0 + SWING_LAG)) < 0.055){
         b.swing.dx = sw.dx; b.swing.dy = sw.dy;        // which way, at the moment it matters
         b.swing.handY = Bat.mid ? Bat.mid.y : Bat.grip.y;
       }
     }
+    // the first crossing of the ball, kept so the stroke length stays measurable
+    if(mag > SWING_START && b.crossT === undefined) b.crossT = b.t - lead;
+    // and the biggest swing whatever happens, so a miss can say what you did
+    if(!b.seen || mag > b.seen.mag) b.seen = { mag, remaining: contactIn };
     Bat.lastMag = mag;
   }
 
   if(remaining < -win){                                 // window shut: judge the swing
+    /* The stroke length is FIXED, and it has to be.
+
+       I tried learning it from each player's own swing — the gap between the
+       stroke starting and its hardest moment — and it cannot work, for a reason
+       worth writing down: "your stroke is long" and "you swung early" are the
+       same measurement. An adaptive lag absorbs the player's timing error into
+       itself, so being early stops costing anything. Measured, a swing played
+       250ms early connected 58 times in 60 while a well timed one connected
+       none. It is a physical constant of a cricket stroke, so it is a constant
+       here, and the window absorbs the variation. */
     if(b.swing && b.swing.mag >= SWING_MIN && Math.abs(b.swing.remaining) <= win){
       playShot(b, b.swing);
       return true;
@@ -1937,7 +1985,7 @@ function missed(b){
      read: whether the bat was nowhere near, or right on it and 140ms out, or the
      ball was under the toe, was a guess every time. */
   G.wagon.push({ miss:true, bowled, len:-(b.pitchZ || 0), ballY:b.y,
-                 swing:b.swing || null, win:hitWindow(), out:bowled });
+                 swing:b.swing || b.seen || null, win:hitWindow(), out:bowled });
   b.state = 'dead';
   endBall();
 }
@@ -2204,13 +2252,18 @@ function loop(now){
     puck.position.x = bat.position.x;
     puck.position.z = HIT_PLANE_Z;
 
-    // the arms reach from your shoulders to the handle, wherever it has got to
-    const gx = bat.position.x - Math.sin(Bat.pose.a)*BAT_LEN*0.5;
-    const gy = bat.position.y + Math.cos(Bat.pose.a)*BAT_LEN*0.5;
+    /* The hands go ALONG the handle, one above the other, which is how anybody
+       holds a bat. They were side by side, 35mm apart across the blade, which is
+       why the grip looked so wrong — two fists clamped to the same spot rather
+       than a top hand and a bottom hand. Which is which follows handedness: a
+       right-hander's left hand is the top one. */
+    const hdx = -Math.sin(Bat.pose.a), hdy = Math.cos(Bat.pose.a);   // toward the handle
     for(let i = 0; i < 2; i++){
+      const top = (i === 0) === (HAND > 0);
+      const along = top ? 0.41 : 0.27;
       arms[i].visible = true;
-      aimArm(arms[i], camera.position.x + (i ? 0.19 : -0.19), 1.16, EYE_BACK - 0.14,
-             gx + (i ? 0.035 : -0.035), gy - (i ? 0.10 : 0.0), HIT_PLANE_Z);
+      aimArm(arms[i], camera.position.x + (i ? 0.17 : -0.17), 1.10, EYE_BACK - 0.08,
+             bat.position.x + hdx*along, bat.position.y + hdy*along, HIT_PLANE_Z);
     }
   }else{
     bat.visible = puck.visible = false;
