@@ -61,7 +61,13 @@ func _attach_viewmodel() -> void:
 		deg_to_rad(90.0 + VM_TILT_DEG),
 		deg_to_rad(VM_ROLL_DEG),
 		deg_to_rad(180.0 + VM_YAW_DEG))
-	_viewmodel_rig.add_child(viewmodel_glb.instantiate())
+	var vm := viewmodel_glb.instantiate()
+	_viewmodel_rig.add_child(vm)
+	# the viewmodel is the closest thing to camera in the whole game; it needs
+	# the fabric shader more than anything else does
+	var swapper := preload("res://scripts/apply_materials.gd").new()
+	swapper.apply_to(vm)
+	swapper.free()
 
 	# Keeping the viewmodel sharp:
 	# Godot's DOF is a full-screen post-process, so render layers CANNOT

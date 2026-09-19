@@ -1,0 +1,15 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://shaders/stylized_fabric.gdshader" id="1_shader"]
+
+[resource]
+shader = ExtResource("1_shader")
+shader_parameter/base_colour = Color(0.9, 0.888, 0.862, 1)
+shader_parameter/roughness_value = 0.45
+shader_parameter/metallic_value = 0.0
+shader_parameter/use_albedo_tex = false
+shader_parameter/sheen_strength = 0.18
+shader_parameter/sheen_tint = 0.4
+shader_parameter/edge_wear = 0.2
+shader_parameter/use_normal_tex = false
+shader_parameter/normal_strength = 1.0

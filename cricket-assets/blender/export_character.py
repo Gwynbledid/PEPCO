@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bpy
 from lib import meshutil as M
+import build_anim as A
 import build_body as B
 import build_rig as R
 
@@ -23,6 +24,11 @@ def main():
     M.reset_scene()
     col, objs = B.assemble(stance_deg=0.0)
     rig, soft, bound = R.rig_character(objs, col)
+
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='POSE')
+    actions = A.build_all(rig)
+    bpy.ops.object.mode_set(mode='OBJECT')
 
     os.makedirs(EXPORT_DIR, exist_ok=True)
     path = os.path.join(EXPORT_DIR, 'batsman.glb')
@@ -46,10 +52,16 @@ def main():
         export_normals=True,
         export_texcoords=True,
         export_def_bones=False,
+        export_animations=True,
+        # ACTIONS emits one glTF animation per action. The default only
+        # follows the active action, which would ship a single clip.
+        export_animation_mode='ACTIONS',
+        export_bake_animation=True,
     )
     tris = sum(M.tri_count(o) for o in objs)
     print(f'  batsman.glb  {len(rig.data.bones)} bones, {len(objs)} meshes, '
-          f'{tris} tris, {os.path.getsize(path)/1024:.1f} KB')
+          f'{tris} tris, {len(actions)} clips, '
+          f'{os.path.getsize(path)/1024:.1f} KB')
 
 
 if __name__ == '__main__':

@@ -47,6 +47,11 @@ const N_BRANDS := 6
 ## Six hoarding variants; the builder cycles them round the boundary.
 @export var hoarding_glbs: Array[PackedScene] = []
 @export var crowd_material: ShaderMaterial
+## Triplanar concrete for the terracing, and the paler precast for the boxes.
+## MultiMeshInstance3D takes a material_override; apply_materials.gd only
+## walks MeshInstance3D, so these have to be assigned here.
+@export var concrete_material: ShaderMaterial
+@export var precast_material: ShaderMaterial
 @export var fill_ratio := 0.94  ## fraction of seats that are occupied
 
 
@@ -126,10 +131,10 @@ func _build_stands() -> void:
 	for s in BOWL_SEGMENTS:
 		var a := TAU * float(s) / float(BOWL_SEGMENTS)
 		xforms.append(Transform3D(Basis(Vector3.UP, a), Vector3.ZERO))
-	_make_multimesh("Stands", stand_glb, xforms)
+	_make_multimesh("Stands", stand_glb, xforms, concrete_material)
 	_make_multimesh("Roof", roof_glb, xforms)
 	_make_multimesh("Signage", signage_glb, xforms)
-	_make_multimesh("Boxes", box_glb, xforms)
+	_make_multimesh("Boxes", box_glb, xforms, precast_material)
 	_make_multimesh("BoxGlass", box_glass_glb, xforms)
 	_make_multimesh("BoxDetails", box_details_glb, xforms)
 

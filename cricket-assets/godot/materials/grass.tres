@@ -1,0 +1,15 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://shaders/mown_grass.gdshader" id="1_shader"]
+
+[resource]
+shader = ExtResource("1_shader")
+shader_parameter/colour_light = Color(0.25, 0.58, 0.12, 1)
+shader_parameter/colour_dark = Color(0.203, 0.497, 0.104, 1)
+shader_parameter/stripe_width_m = 4.0
+shader_parameter/stripe_angle_deg = 0.0
+shader_parameter/roughness_toward = 0.48
+shader_parameter/roughness_away = 0.72
+shader_parameter/variation_scale = 3.5
+shader_parameter/variation_amount = 0.06
+shader_parameter/sheen = 0.25

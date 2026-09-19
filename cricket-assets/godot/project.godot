@@ -2,7 +2,7 @@ config_version=5
 
 [application]
 config/name="Cricket Assets — Lookdev"
-run/main_scene="res://scenes/lookdev.tscn"
+run/main_scene="res://scenes/match.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 
 [rendering]

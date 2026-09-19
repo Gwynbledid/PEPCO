@@ -1,0 +1,16 @@
+[gd_resource type="ShaderMaterial" load_steps=3 format=3]
+
+[ext_resource type="Shader" path="res://shaders/crowd_card.gdshader" id="1_shader"]
+[ext_resource type="Texture2D" path="res://assets/crowd_atlas.png" id="2_atlas"]
+
+[resource]
+shader = ExtResource("1_shader")
+shader_parameter/crowd_atlas = ExtResource("2_atlas")
+shader_parameter/atlas_cols = 8
+shader_parameter/atlas_rows = 4
+shader_parameter/alpha_cut = 0.5
+shader_parameter/bob_amplitude = 0.035
+shader_parameter/bob_speed = 1.4
+shader_parameter/sway_amount = 0.02
+shader_parameter/tint_strength = 0.18
+shader_parameter/value_spread = 0.22

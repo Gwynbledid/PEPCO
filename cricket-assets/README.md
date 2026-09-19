@@ -35,7 +35,8 @@ blender/
   build_character.py    pads, helmet + grille, shoes
   build_body.py         torso, arms, legs, head, and the assembled batsman
   build_rig.py          21-bone armature, skinning and rigid bone binding
-  export_character.py   skinned batsman.glb for the engine
+  build_anim.py         idle / stance / shot_drive / run clips
+  export_character.py   skinned, animated batsman.glb for the engine
   build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
   generate_textures.py  concrete, crowd atlas, seats, hoardings, signage
   lib/noise.py          tileable value noise / fBm / dirt streaks
@@ -45,7 +46,12 @@ godot/
   shaders/mown_grass.gdshader       world-space mowing stripes, analytically AA'd
   shaders/stylized_fabric.gdshader  cricket whites with sheen
   shaders/crowd_card.gdshader       billboarded, atlased, de-synchronised crowd
-  scenes/lookdev.tscn               the lighting rig, ported with matching numbers
+  scenes/match.tscn                 THE WIRED SCENE: ground, stadium, batsman, POV
+  scenes/lookdev.tscn               lighting rig only, kept as a bare harness
+  materials/*.tres                  ShaderMaterials binding shaders to textures
+  scripts/apply_materials.gd        swaps glTF's imported materials for ours
+  scripts/match_scene.gd            spawns the batsman and starts it idling
+  verify_match.gd                   headless assembly check (see below)
   scripts/stadium_builder.gd        MultiMesh instancing of the bowl
   scripts/batsman_pov.gd            POV camera + viewmodel attachment
 exports/    generated .glb files
@@ -167,6 +173,52 @@ darkening so neighbours separate in a packed stand, and real silhouette
 variety — caps, raised arms, flags, leaning, varied heights. Silhouette is
 what survives at 80 m. Colour only stops it looking like a repeating pattern,
 which is why per-instance tint dropped to 0.18 once the atlas carried its own.
+
+## Is it actually in the engine?
+
+Yes, as of `scenes/match.tscn`. Run the headless check to confirm nothing has
+come unwired:
+
+```bash
+godot --headless --path godot --script verify_match.gd
+```
+
+It instantiates the scene, lets every `_ready()` run, and counts what exists.
+Current output:
+
+| | |
+|---|---|
+| MultiMesh instances | **57,831** across 16 MultiMeshes |
+| Skeleton | 21 bones, 20 skinned meshes |
+| Animation | `idle` playing |
+| ShaderMaterial surfaces | 14 |
+| Viewmodel | attached to the POV camera |
+
+**glTF does not carry custom materials.** It only has base colour, metallic and
+roughness, so an imported mesh arrives with a plain `StandardMaterial3D` and
+none of the sheen, mown stripes or triplanar concrete is active. That is why
+the Blender material names (`M_GrassMown`, `M_ConcreteTex`, …) are a contract:
+`apply_materials.gd` matches on them and swaps in the real ShaderMaterials.
+Rename one in Blender and it silently reverts to flat PBR in-engine.
+
+Two mechanics worth knowing:
+
+- Matching is per **surface**, not per mesh. `ground.glb` carries outfield,
+  pitch, creases and stumps as separate surfaces needing different materials,
+  so `set_surface_override_material` is right and `material_override` would
+  flatten all four into one.
+- `apply_materials.gd` only walks `MeshInstance3D`. The stadium is
+  `MultiMeshInstance3D`, which takes a `material_override` instead, so concrete
+  and precast are assigned on the builder in the scene file.
+
+The 22 surfaces it leaves alone are correct: willow, grip, skin, helmet navy,
+grille steel, roof green, seats, hoardings, bark and foliage are all fine as
+standard PBR.
+
+**Not verified:** how any of it looks running. There is no GPU in the build
+environment, so everything here is a structural check -- the scene assembles,
+the counts are right, the animation plays. Expect to adjust light energies and
+material parameters by eye the first time you open it.
 
 ## Rigging
 
@@ -452,8 +504,12 @@ rather than broken:
   as distinct hands. Fine in POV where they are close; weaker here.
 - **In pure side view the bat sits slightly clear of the near hand.** Front and
   three-quarter views read correctly.
-- No animation clips yet. The rig works and poses correctly, but nothing is
-  keyframed -- idle, stance, shot and run cycles all still need authoring.
+- **Animation has no root motion and no foot planting.** The clips rotate
+  bones only, so during the run cycle and the drive the feet slide and can
+  lift off the ground. Real gameplay needs a root bone driven by the movement
+  system and IK to pin the feet.
+- The drive reads as *a* swing rather than a clean front-foot drive; the
+  figure leans back through contact instead of into it.
 - **The head is a featureless sphere.** It is almost entirely hidden by the
   helmet, which is why it has not been given a face.
 - No character rig. Bowler and fielders are not built — in POV they are distant
