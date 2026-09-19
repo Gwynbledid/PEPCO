@@ -101,7 +101,8 @@ def main():
         print('\nexporting glTF:')
         export_selected(ground_objs, 'ground.glb')
         export_selected(vm_objs, 'viewmodel.glb')
-        for key in ('Stand_Module', 'Roof_Module', 'Signage_Module', 'Seat',
+        for key in ('Stand_Module', 'Roof_Module', 'Signage_Module',
+                    'Box_Module', 'Box_Glass', 'RoofSign_Module', 'Seat',
                     'CrowdCard', 'Sightscreen', 'Floodlight_Tower',
                     'Floodlight_Lamps', 'Tree',
                     'Hoarding_00', 'Hoarding_01', 'Hoarding_02',

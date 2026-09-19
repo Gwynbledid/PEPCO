@@ -26,7 +26,9 @@ from build_ground import ground_height, PITCH_LEN
 
 SUN_ELEVATION = math.radians(41.0)
 SUN_AZIMUTH   = math.radians(128.0)      # front-left of a down-pitch camera
-SUN_COLOR     = (1.000, 0.964, 0.894)    # ~5800 K
+SUN_COLOR     = (1.000, 0.952, 0.862)    # ~5400 K, warmer than
+                                         # neutral daylight: the reference has
+                                         # a distinctly golden key
 SUN_STRENGTH  = 4.0                      # W/m2 -- see README for the Godot /
                                          # Unity / Unreal equivalents
 SKY_STRENGTH  = 0.30                     # deliberately LOW. A full-strength
@@ -34,7 +36,7 @@ SKY_STRENGTH  = 0.30                     # deliberately LOW. A full-strength
                                          # everything goes pastel; at 0.30 the
                                          # key dominates and the grass keeps
                                          # its colour. Measured, not guessed.
-EXPOSURE      = -2.0
+EXPOSURE      = -1.72
 CLOUD_LIT     = 13.0                     # radiance of a sunlit cumulus top
 SUN_ANGLE     = math.radians(2.5)        # soft shadow edges; default is 0.526
 BOUNCE_COLOR  = (0.350, 0.550, 0.200)
@@ -118,7 +120,7 @@ def build_sky_world():
     nt.links.new(comb.outputs['Vector'], mapping.inputs['Vector'])
 
     noise = nt.nodes.new('ShaderNodeTexNoise')
-    noise.inputs['Scale'].default_value = 2.4
+    noise.inputs['Scale'].default_value = 1.55
     noise.inputs['Detail'].default_value = 9.0
     noise.inputs['Roughness'].default_value = 0.52
     nt.links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
@@ -135,8 +137,8 @@ def build_sky_world():
     # it reads as pollution, not weather. Widen this and no amount of
     # brightness, coverage or cloud size will rescue it; the edges are the
     # cloud. Move the two stops together to change coverage.
-    ramp.color_ramp.elements[0].position = 0.460
-    ramp.color_ramp.elements[1].position = 0.515
+    ramp.color_ramp.elements[0].position = 0.448
+    ramp.color_ramp.elements[1].position = 0.505
     nt.links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
 
     # fade the cloud layer out at the horizon (Math has no smoothstep in 5.0,

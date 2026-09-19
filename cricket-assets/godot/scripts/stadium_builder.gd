@@ -20,6 +20,7 @@ const L_RISE := 0.42
 const DECK_Z := 2.4
 
 const SIGN_H := 2.20
+const BOX_H := 3.40
 
 const U_R0 := 92.0
 const U_R1 := 103.0
@@ -36,6 +37,9 @@ const N_BRANDS := 6
 @export var stand_glb: PackedScene
 @export var roof_glb: PackedScene
 @export var signage_glb: PackedScene
+@export var box_glb: PackedScene
+@export var box_glass_glb: PackedScene
+@export var roofsign_glb: PackedScene
 @export var seat_glb: PackedScene
 @export var crowd_glb: PackedScene
 @export var tree_glb: PackedScene
@@ -67,7 +71,7 @@ func _tier_rows() -> Array[Vector2]:
 	for r in L_ROWS:
 		out.append(Vector2(L_R0 + float(r) * l_depth + l_depth * 0.55,
 				DECK_Z + float(r) * L_RISE))
-	var u_deck: float = DECK_Z + float(L_ROWS) * L_RISE + SIGN_H + 0.80
+	var u_deck: float = DECK_Z + float(L_ROWS) * L_RISE + SIGN_H + BOX_H + 0.70
 	var u_depth := (U_R1 - U_R0) / float(U_ROWS)
 	for r in U_ROWS:
 		out.append(Vector2(U_R0 + float(r) * u_depth + u_depth * 0.55,
@@ -124,6 +128,17 @@ func _build_stands() -> void:
 	_make_multimesh("Stands", stand_glb, xforms)
 	_make_multimesh("Roof", roof_glb, xforms)
 	_make_multimesh("Signage", signage_glb, xforms)
+	_make_multimesh("Boxes", box_glb, xforms)
+	_make_multimesh("BoxGlass", box_glass_glb, xforms)
+
+	## Rooftop boards skip every third segment -- a continuous ring reads as a
+	## wall rather than a broken skyline.
+	var roofsign: Array[Transform3D] = []
+	for s in BOWL_SEGMENTS:
+		if s % 3 == 1:
+			continue
+		roofsign.append(xforms[s])
+	_make_multimesh("RoofSigns", roofsign_glb, roofsign)
 
 
 func _build_seats() -> void:
@@ -187,7 +202,7 @@ func _build_trees() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 991
 	for i in 46:
-		var a := TAU * float(i) / 46.0 + rng.randf() * 0.06
+		var a := TAU * float(i) / 46.0 + rng.randf() * 0.06  # noqa
 		var r := TREE_R + rng.randf() * 9.0
 		var pos := Vector3(r * cos(a), 0.0, r * sin(a))
 		var sc := 0.8 + rng.randf() * 0.7

@@ -163,7 +163,10 @@ generic bowl:
 | Reference feature | How it is built |
 |---|---|
 | Two seating tiers | `L_ROWS` 14 rows at R80–90, `U_ROWS` 13 rows at R92–103 |
+| Glazed corporate-box balcony between them | `Box_Module` + `Box_Glass`, recessed at R91.1 with precast piers |
 | Green signage band between tiers | `Signage_Module`, textured, positionally UV'd |
+| Green board standing above the roofline | `RoofSign_Module`, on 2 of every 3 segments |
+| Halogen pylons in frame | 6 towers at 15°+60°k, 5×2 lamp array at emission 220 |
 | Dark canopy roof | `Roof_Module`, deliberately shallow (see below) |
 | Dense colourful crowd | 4×4 atlas, 16 figures, 94% seat occupancy |
 | Branded boundary boards | 6 invented brands, cycled round the boundary |
@@ -172,7 +175,14 @@ generic bowl:
 | Big cumulus sky | procedural, projected onto a cloud plane |
 | Mown outfield stripes | shader, world-space, analytically antialiased |
 
-### Three mistakes worth not repeating
+The balcony matters more than it sounds. The reference does not stack two
+identical decks — it separates them with a recessed, glazed box level, and
+that dark horizontal band is most of what makes the bowl read as a real
+stadium rather than two rings of terracing. Same for the roofline: a
+continuous ring of boards looks like a wall, so they go on two segments in
+every three.
+
+### Four mistakes worth not repeating
 
 **The canopy made the stands read as a black void.** A tall back wall plus a
 deep soffit put a solid dark band across every stand. Real roofs read as a
@@ -201,7 +211,14 @@ and flipping U during construction changed nothing because the reversal
 happened afterwards. Any text-bearing surface is now mapped from **world
 position** after the recalc, never from loop order.
 
-A fourth, less subtle one: the first reference render aimed the camera at the
+**Every floodlight rendered as a black silhouette.** The lamps sit on the
+head's local +Y, which after a Z-rotation of θ points along θ+90. Aiming them
+at the middle of the ground (direction a+180) needs a rotation of **a+90**,
+not a+180 — the intuitive value put the whole array 90° off, with its emissive
+faces pointing at the car park. Worth checking on anything whose front face
+matters: it renders perfectly, just facing the wrong way.
+
+A fifth, less subtle one: the first reference render aimed the camera at the
 *shadowed* half of the bowl. With a key at azimuth 128°, the lit stands are on
 the −Y arc. Check which side the sun is on before blaming the lighting.
 

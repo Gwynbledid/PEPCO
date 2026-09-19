@@ -42,12 +42,26 @@ SIGN_R        = L_R1 + 0.30
 SIGN_Z0       = DECK_Z + L_ROWS * L_RISE
 SIGN_H        = 2.20
 
-# upper tier, set back and higher
+# Corporate-box balcony. The reference does not stack two identical decks --
+# it separates them with a recessed, glazed box level, and that dark band is
+# most of what makes the bowl read as a real stadium rather than two rings of
+# terracing. Boxes sit BEHIND the lower tier's back line, so the balcony is
+# genuinely recessed rather than flush.
+BOX_R         = L_R1 + 1.10
+BOX_Z0        = SIGN_Z0 + SIGN_H
+BOX_H         = 3.40
+BOX_PIERS     = 5              # frame columns per wedge, between the glass
+
+# upper tier, set back and higher again
 U_R0, U_R1    = 92.0, 103.0
 U_ROWS        = 13
 U_RISE        = 0.50
 U_DEPTH       = (U_R1 - U_R0) / U_ROWS
-U_DECK_Z      = SIGN_Z0 + SIGN_H + 0.80
+U_DECK_Z      = BOX_Z0 + BOX_H + 0.70
+
+# green board standing proud of the roofline, as in the reference
+RSIGN_H       = 3.30
+RSIGN_R       = U_R1 - 1.0
 
 # The canopy was the worst offender in early renders: a tall back wall plus a
 # deep soffit put a solid black band across the top of every stand. Real
@@ -104,8 +118,8 @@ def build_stand_module(col):
     # front facade dropping to pitch level
     _strip(bm, uv, _arc(L_R0, DECK_Z, half), _arc(L_R0, 0.0, half))
 
-    # --- upper tier: vertical face up from the signage, then terracing
-    _strip(bm, uv, _arc(U_R0, U_DECK_Z - 2.6, half), _arc(U_R0, U_DECK_Z, half))
+    # --- upper tier: vertical face up from the box roof, then terracing
+    _strip(bm, uv, _arc(U_R0, BOX_Z0 + BOX_H, half), _arc(U_R0, U_DECK_Z, half))
     for r in range(U_ROWS):
         r0 = U_R0 + r * U_DEPTH
         z = U_DECK_Z + r * U_RISE
@@ -136,7 +150,7 @@ def build_roof_module(col):
     obj = M.mesh_from_bmesh(bm, 'Roof_Module', col)
     M.solidify(obj, thickness=0.35, offset=-1.0)
     M.apply_all_modifiers(obj)
-    mat.assign(obj, mat._principled('M_Roof', (0.075, 0.180, 0.115), 0.55))
+    mat.assign(obj, mat.roof_green())
     M.shade_smooth(obj, angle_deg=25)
     return obj
 
@@ -170,6 +184,80 @@ def build_signage_module(col):
             loop[uv].uv = (u, v)
 
     obj = M.mesh_from_bmesh(bm, 'Signage_Module', col)
+    mat.assign(obj, mat.signage_tex())
+    return obj
+
+
+def build_box_module(col):
+    """The glazed corporate-box balcony between the two seating decks.
+
+    Built as a dark glass band broken by pale precast piers. Returned as TWO
+    objects because they need different materials, and a single mesh with two
+    slots would stop each being MultiMesh-instanced on its own in Godot.
+    """
+    half = SEG_ANGLE * 0.5
+
+    glass_bm = bmesh.new()
+    guv = glass_bm.loops.layers.uv.new('UVMap')
+    _strip(glass_bm, guv, _arc(BOX_R, BOX_Z0 + BOX_H * 0.88, half),
+           _arc(BOX_R, BOX_Z0 + BOX_H * 0.20, half))
+    bmesh.ops.recalc_face_normals(glass_bm, faces=glass_bm.faces[:])
+    glass = M.mesh_from_bmesh(glass_bm, 'Box_Glass', col)
+    mat.assign(glass, mat.box_glass())
+
+    # solid parapet below the glazing, and the soffit above it
+    body_bm = bmesh.new()
+    buv = body_bm.loops.layers.uv.new('UVMap')
+    _strip(body_bm, buv, _arc(BOX_R, BOX_Z0 + BOX_H * 0.20, half),
+           _arc(BOX_R, BOX_Z0, half))
+    _strip(body_bm, buv, _arc(BOX_R, BOX_Z0 + BOX_H, half),
+           _arc(BOX_R, BOX_Z0 + BOX_H * 0.88, half))
+    bmesh.ops.recalc_face_normals(body_bm, faces=body_bm.faces[:])
+    body = M.mesh_from_bmesh(body_bm, 'Box_Body', col)
+    mat.assign(body, mat.box_frame())
+
+    # piers: short vertical slabs standing proud of the glass line
+    piers = []
+    for i in range(BOX_PIERS):
+        a = -half + SEG_ANGLE * (i + 0.5) / BOX_PIERS
+        p = M.box(f'box_pier{i}', size=(0.55, 0.9, BOX_H),
+                  location=(BOX_R * math.cos(a), BOX_R * math.sin(a),
+                            BOX_Z0 + BOX_H * 0.5), collection=col)
+        p.rotation_euler = (0, 0, a)
+        piers.append(p)
+    pier_obj = M.join(piers, 'Box_Piers')
+    M.bevel(pier_obj, width=0.03, segments=2)
+    M.apply_all_modifiers(pier_obj)
+    M.shade_smooth(pier_obj, angle_deg=30)
+    M.smart_uv(pier_obj)
+    mat.assign(pier_obj, mat.box_frame())
+
+    merged = M.join([body, pier_obj], 'Box_Module')
+    return merged, glass
+
+
+def build_roof_signage(col):
+    """The green board standing above the roofline.
+
+    In the reference this is silhouetted against sky rather than sitting flat
+    on the stand, and that break in the roofline is a large part of the
+    skyline's character. Placed on a subset of segments, not all of them.
+    """
+    bm = bmesh.new()
+    uv = bm.loops.layers.uv.new('UVMap')
+    half = SEG_ANGLE * 0.5
+    z0 = ROOF_Z + 0.4
+    _strip(bm, uv, _arc(RSIGN_R, z0 + RSIGN_H, half), _arc(RSIGN_R, z0, half))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    for f in bm.faces:
+        for loop in f.loops:
+            co = loop.vert.co
+            theta = math.atan2(co.y, co.x)
+            loop[uv].uv = (1.0 - (theta + half) / SEG_ANGLE,
+                           (co.z - z0) / RSIGN_H)
+    obj = M.mesh_from_bmesh(bm, 'RoofSign_Module', col)
+    M.solidify(obj, thickness=0.30, offset=0.0)
+    M.apply_all_modifiers(obj)
     mat.assign(obj, mat.signage_tex())
     return obj
 
@@ -276,19 +364,21 @@ def build_floodlight(col):
     tower = M.join([mast, frame], 'Floodlight_Tower')
     M.shade_smooth(tower, angle_deg=35)
 
+    # Halogen array: 5 x 2 of clearly separated lamp faces, as in the
+    # reference, rather than a dense grid that reads as one bright slab.
     lamps = []
-    for ix in range(6):
-        for iz in range(3):
-            lamp = M.box(f'fl_lamp{ix}_{iz}', size=(2.2, 0.30, 1.6),
-                         location=(-6.6 + ix * 2.65, 0.62, H + 1.2 + iz * 1.8),
+    for ix in range(5):
+        for iz in range(2):
+            lamp = M.box(f'fl_lamp{ix}_{iz}', size=(2.5, 0.34, 2.0),
+                         location=(-6.0 + ix * 3.0, 0.66, H + 1.6 + iz * 2.5),
                          collection=col)
-            M.bevel(lamp, width=0.05, segments=2)
+            M.bevel(lamp, width=0.06, segments=2)
             M.apply_all_modifiers(lamp)
             lamps.append(lamp)
     lamp_obj = M.join(lamps, 'Floodlight_Lamps')
     M.shade_smooth(lamp_obj, angle_deg=35)
     M.smart_uv(lamp_obj)
-    mat.assign(lamp_obj, mat.floodlight())
+    mat.assign(lamp_obj, mat.halogen())
     return tower, lamp_obj
 
 
@@ -316,10 +406,14 @@ def build_tree(col):
 def build_modules(col=None):
     col = col or M.new_collection('Stadium_Modules')
     tower, lamps = build_floodlight(col)
+    box_body, box_glass = build_box_module(col)
     mods = {
         'Stand_Module':     build_stand_module(col),
         'Roof_Module':      build_roof_module(col),
         'Signage_Module':   build_signage_module(col),
+        'Box_Module':       box_body,
+        'Box_Glass':        box_glass,
+        'RoofSign_Module':  build_roof_signage(col),
         'Seat':             build_seat(col),
         'CrowdCard':        build_crowd_card(col, cell=0, name='CrowdCard'),
         'Sightscreen':      build_sightscreen(col),
@@ -366,7 +460,8 @@ def assemble_bowl(modules, col=None, seat_stride=2, crowd_fill=0.94):
             M.link(o, col)
             placed.append(o)
 
-    for key in ('Stand_Module', 'Roof_Module', 'Signage_Module'):
+    for key in ('Stand_Module', 'Roof_Module', 'Signage_Module',
+                'Box_Module', 'Box_Glass'):
         src = modules[key]
         for s in range(BOWL_SEGMENTS):
             o = src.copy()
@@ -374,6 +469,18 @@ def assemble_bowl(modules, col=None, seat_stride=2, crowd_fill=0.94):
             o.rotation_euler = (0, 0, s * SEG_ANGLE)
             M.link(o, col)
             placed.append(o)
+
+    # Rooftop boards on a subset of segments only. A continuous ring of them
+    # looks like a wall; the reference has the roofline broken irregularly.
+    rsign = modules['RoofSign_Module']
+    for s in range(BOWL_SEGMENTS):
+        if s % 3 == 1:
+            continue
+        o = rsign.copy()
+        o.data = rsign.data
+        o.rotation_euler = (0, 0, s * SEG_ANGLE)
+        M.link(o, col)
+        placed.append(o)
 
     seat_src = modules['Seat']
     cells = modules['_crowd_cells']
@@ -421,13 +528,21 @@ def assemble_bowl(modules, col=None, seat_stride=2, crowd_fill=0.94):
         M.link(ss, col)
         placed.append(ss)
 
-    for k in range(4):
-        a = math.radians(45 + k * 90)
+    # Six pylons, offset 15 degrees so one falls inside the reference
+    # camera's framing rather than all four sitting on the diagonals just
+    # outside it.
+    for k in range(6):
+        a = math.radians(15 + k * 60)
         for key in ('Floodlight_Tower', 'Floodlight_Lamps'):
             f = modules[key].copy()
             f.data = modules[key].data
-            f.location = (108 * math.cos(a), 108 * math.sin(a), 0)
-            f.rotation_euler = (0, 0, a + math.pi)
+            f.location = (110 * math.cos(a), 110 * math.sin(a), 0)
+            # Lamps sit on the head's local +Y, which after a Z-rotation of
+            # theta points along theta+90. To aim them at the middle of the
+            # ground (direction a+180) the rotation must be a+90, NOT a+180 --
+            # that put the array 90 degrees off and rendered every pylon as a
+            # black silhouette with its emissive faces pointing at the car park.
+            f.rotation_euler = (0, 0, a + math.pi * 0.5)
             M.link(f, col)
             placed.append(f)
 

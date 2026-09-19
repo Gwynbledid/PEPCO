@@ -43,6 +43,9 @@ PITCH_TAN      = (0.780, 0.655, 0.470)
 CREASE_WHITE   = (0.920, 0.915, 0.900)
 
 SEAT_BLUE      = (0.130, 0.350, 0.620)
+BOX_GLASS      = (0.055, 0.085, 0.115)   # corporate-box glazing, near-black
+BOX_FRAME      = (0.760, 0.755, 0.735)   # pale precast frames between boxes
+ROOF_GREEN     = (0.075, 0.180, 0.115)
 CONCRETE       = (0.600, 0.592, 0.570)
 SIGHTSCREEN    = (0.050, 0.300, 0.180)
 STEEL_DARK     = (0.120, 0.125, 0.135)
@@ -245,6 +248,29 @@ def signage_tex():
 
 def seat_block_tex():
     return textured('M_SeatBlock', 'seat_block.png', roughness=0.42)
+
+
+def box_glass():
+    """Corporate-box glazing. Dark and glossy: from the middle of the ground
+    these read as a black band, which is exactly what separates a balcony
+    level from the seating decks above and below it."""
+    return _principled('M_BoxGlass', BOX_GLASS, 0.09, metallic=0.25)
+
+
+def box_frame():
+    return _principled('M_BoxFrame', BOX_FRAME, 0.55)
+
+
+def roof_green():
+    return _principled('M_Roof', ROOF_GREEN, 0.55)
+
+
+def halogen():
+    """Halogen lamp face. Emission strength is deliberately extreme -- these
+    have to blow out and bloom in full daylight, the way real floodlights do
+    in a sunny photograph."""
+    return _principled('M_Halogen', (1.0, 0.98, 0.93), 0.18,
+                       emission=(1.0, 0.972, 0.90), emission_strength=220.0)
 
 
 def foliage():
