@@ -7,7 +7,7 @@
 // normal, giving even real-world texel size everywhere and needing no unwrap.
 //
 // This mirrors the BOX projection used by mat.concrete_tex() in Blender; keep
-// `tri_scale` in step with the Mapping node's scale there (0.25 = 4 m tiles)
+// `tri_scale` in step with the Mapping node's scale there (0.95 = ~1 m tiles)
 // or the preview renders and the game will not match.
 
 shader_type spatial;
@@ -16,7 +16,7 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap, hint_default_white;
 uniform sampler2D roughness_tex : hint_default_white, filter_linear_mipmap;
 uniform vec3 tint : source_color = vec3(1.0, 1.0, 1.0);
-uniform float tri_scale : hint_range(0.02, 2.0) = 0.25;
+uniform float tri_scale : hint_range(0.02, 4.0) = 0.95;
 uniform float tri_sharpness : hint_range(1.0, 16.0) = 4.0;
 uniform float roughness_min : hint_range(0.0, 1.0) = 0.30;
 uniform float roughness_max : hint_range(0.0, 1.0) = 0.98;

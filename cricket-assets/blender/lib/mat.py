@@ -232,7 +232,7 @@ def textured(name, filename, roughness=0.6, alpha_clip=False,
     return mat
 
 
-def concrete_tex(name='M_ConcreteTex', tint=(1.0, 1.0, 1.0), scale=0.25):
+def concrete_tex(name='M_ConcreteTex', tint=(1.0, 1.0, 1.0), scale=0.95):
     """Weathered concrete, BOX-PROJECTED from object coordinates.
 
     The stand is built from swept quad strips whose UVs run 0..1 per segment,
@@ -241,7 +241,13 @@ def concrete_tex(name='M_ConcreteTex', tint=(1.0, 1.0, 1.0), scale=0.25):
     of each face, which gives an even real-world texel density across
     terracing, risers and walls alike -- and needs no unwrapping at all.
 
-    `scale` is in object units: 0.25 tiles the map every 4 m.
+    `scale` is in object units: 0.95 tiles the map roughly every 1.05 m.
+
+    Measured, not guessed. At 0.25 (4 m tiles) the blotching read as soft
+    marble and the form-board lines disappeared entirely -- a 1024 px map
+    stretched over 4 m puts the whole thing below the detail the eye wants at
+    conversational distance. Around a metre per tile, the lines land at a
+    believable board pitch and the grain survives.
     """
     mat = bpy.data.materials.get(name)
     if mat:
@@ -295,7 +301,7 @@ def concrete_tex(name='M_ConcreteTex', tint=(1.0, 1.0, 1.0), scale=0.25):
 
 def precast_tex():
     """Paler precast, for the box-balcony frames and piers."""
-    return concrete_tex('M_PrecastTex', tint=(1.18, 1.17, 1.14), scale=0.55)
+    return concrete_tex('M_PrecastTex', tint=(1.18, 1.17, 1.14), scale=1.35)
 
 
 def seat_tex():

@@ -186,21 +186,21 @@ def concrete(path_albedo, path_rough, size=1024, seed=11):
     grain = N.fbm(size, 200, 2, rng)
 
     value = (0.700
-             + (blotch - 0.5) * 0.17
-             + (medium - 0.5) * 0.085
-             + (grain - 0.5) * 0.05)
+             + (blotch - 0.5) * 0.10
+             + (medium - 0.5) * 0.075
+             + (grain - 0.5) * 0.055)
 
     # form-board lines: shuttering leaves a seam every ~1.2 m
     lines = np.zeros((size, size), dtype=np.float32)
     spacing = size // 6
     for k in range(6):
         y = k * spacing
-        lines[:, max(0, y - 1):y + 2] += 0.10
-        lines[:, y + 2:y + 4] -= 0.035        # pale bleed under each seam
+        lines[:, max(0, y - 1):y + 2] += 0.17
+        lines[:, y + 2:y + 4] -= 0.045        # pale bleed under each seam
     value -= lines
 
     # run-off staining
-    value -= N.streaks(size, rng, count=110, strength=0.30) * 0.30
+    value -= N.streaks(size, rng, count=110, strength=0.30) * 0.24
 
     value = np.clip(value, 0.06, 1.0)
 
