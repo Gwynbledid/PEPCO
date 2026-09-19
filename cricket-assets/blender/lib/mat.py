@@ -38,12 +38,12 @@ WILLOW         = (0.860, 0.762, 0.550)
 GRIP_BLACK     = (0.045, 0.045, 0.050)
 
 GRASS_LIGHT    = (0.250, 0.580, 0.120)
-GRASS_DARK     = (0.160, 0.420, 0.090)
+GRASS_DARK     = (0.203, 0.497, 0.104)
 PITCH_TAN      = (0.780, 0.655, 0.470)
 CREASE_WHITE   = (0.920, 0.915, 0.900)
 
 SEAT_BLUE      = (0.130, 0.350, 0.620)
-CONCRETE       = (0.480, 0.470, 0.450)
+CONCRETE       = (0.600, 0.592, 0.570)
 SIGHTSCREEN    = (0.050, 0.300, 0.180)
 STEEL_DARK     = (0.120, 0.125, 0.135)
 FLOODLIGHT_EM  = (1.000, 0.960, 0.880)
@@ -171,6 +171,88 @@ def mown_grass(stripe_width_m=4.0):
     nt.links.new(step.outputs[0], r_mix.inputs['Factor'])
     nt.links.new(r_mix.outputs[0], bsdf.inputs['Roughness'])
     return m
+
+
+# --- textured materials -------------------------------------------------
+import os as _os
+_TEXDIR = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+    'textures')
+
+
+def _image(filename):
+    """Load a generated texture, reusing it if already loaded."""
+    img = bpy.data.images.get(filename)
+    if img is None:
+        path = _os.path.join(_TEXDIR, filename)
+        if not _os.path.exists(path):
+            return None
+        img = bpy.data.images.load(path)
+    return img
+
+
+def textured(name, filename, roughness=0.6, alpha_clip=False,
+             emission_boost=0.0):
+    """Principled BSDF driven by one of the generated PNGs.
+
+    Textures are authored in sRGB (they came out of Pillow), so the image node
+    must stay on sRGB -- setting it to Non-Color here is the same colour-space
+    mistake the palette comment warns about, just in the other direction.
+    """
+    mat = bpy.data.materials.get(name)
+    if mat:
+        return mat
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes['Principled BSDF']
+    bsdf.inputs['Roughness'].default_value = roughness
+
+    img = _image(filename)
+    if img is None:
+        bsdf.inputs['Base Color'].default_value = (0.7, 0.7, 0.7, 1.0)
+        return mat
+
+    tex = nt.nodes.new('ShaderNodeTexImage')
+    tex.image = img
+    tex.interpolation = 'Linear'
+    tex.extension = 'CLIP' if alpha_clip else 'REPEAT'
+    nt.links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
+    if emission_boost > 0.0:
+        nt.links.new(tex.outputs['Color'], bsdf.inputs['Emission Color'])
+        bsdf.inputs['Emission Strength'].default_value = emission_boost
+    if alpha_clip:
+        nt.links.new(tex.outputs['Alpha'], bsdf.inputs['Alpha'])
+        mat.blend_method = 'CLIP' if hasattr(mat, 'blend_method') else 'BLEND'
+        if hasattr(mat, 'shadow_method'):
+            mat.shadow_method = 'CLIP'
+    return mat
+
+
+def crowd_tex():
+    return textured('M_CrowdTex', 'crowd_atlas.png', roughness=0.9,
+                    alpha_clip=True)
+
+
+def hoarding_tex(index):
+    return textured(f'M_Hoarding{index:02d}', f'hoarding_{index:02d}.png',
+                    roughness=0.45)
+
+
+def signage_tex():
+    return textured('M_Signage', 'stand_signage.png', roughness=0.55)
+
+
+def seat_block_tex():
+    return textured('M_SeatBlock', 'seat_block.png', roughness=0.42)
+
+
+def foliage():
+    return _principled('M_Foliage', (0.145, 0.320, 0.105), 0.78)
+
+
+def bark():
+    return _principled('M_Bark', (0.230, 0.170, 0.125), 0.85)
 
 
 def assign(obj, material, slot=0):

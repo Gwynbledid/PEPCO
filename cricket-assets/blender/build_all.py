@@ -101,17 +101,26 @@ def main():
         print('\nexporting glTF:')
         export_selected(ground_objs, 'ground.glb')
         export_selected(vm_objs, 'viewmodel.glb')
-        for key in ('Stand_Module', 'Seat', 'CrowdCard', 'Hoarding_Panel',
-                    'Sightscreen', 'Floodlight_Tower', 'Floodlight_Lamps'):
-            export_selected([modules[key]], f'{key.lower()}.glb')
+        for key in ('Stand_Module', 'Roof_Module', 'Signage_Module', 'Seat',
+                    'CrowdCard', 'Sightscreen', 'Floodlight_Tower',
+                    'Floodlight_Lamps', 'Tree',
+                    'Hoarding_00', 'Hoarding_01', 'Hoarding_02',
+                    'Hoarding_03', 'Hoarding_04', 'Hoarding_05'):
+            if key in modules:
+                export_selected([modules[key]], f'{key.lower()}.glb')
 
     if not args.no_render:
         print('\nassembling bowl for preview...')
         build_stadium.assemble_bowl(modules)
         # the origin-placed modules would otherwise sit in shot at the centre
-        for o in modules.values():
-            o.hide_render = True
+        for key, o in modules.items():
+            if key.startswith('_'):
+                for c in o:
+                    c.hide_render = True
+            else:
+                o.hide_render = True
         print('rendering:')
+        render(rig['reference'], 'reference.png', args.samples, tuple(args.res))
         render(rig['pov'], 'pov.png', args.samples, tuple(args.res))
         for o in vm_objs:
             o.hide_render = True          # the viewmodel is camera-locked and

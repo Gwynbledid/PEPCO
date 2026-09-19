@@ -32,7 +32,9 @@ blender/
   build_ground.py       outfield, pitch, creases, stumps, boundary rope
   build_stadium.py      stand module, seat, crowd card, hoarding, sightscreen, floodlight
   build_viewmodel.py    bat, gloves, forearms, helmet grille (first person)
-  build_lookdev.py      sun, skylight, grass bounce, sky, cameras, tonemap
+  build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
+  generate_textures.py  crowd atlas, hoardings, signage (Pillow, no painting)
+  render_sheet.py       each asset alone under the real rig
   build_all.py          builds everything, exports glTF, renders previews
 godot/
   shaders/mown_grass.gdshader       world-space mowing stripes, analytically AA'd
@@ -48,11 +50,15 @@ renders/    generated preview stills
 ## Running it
 
 ```bash
-pip install bpy            # Blender 5.0 as a Python module; needs Python 3.11
+pip install bpy pillow     # Blender 5.0 as a Python module; needs Python 3.11
 cd blender
+python3 generate_textures.py              # run once; regenerates all PNGs
 python3 build_all.py --no-render          # export only, a few seconds
 python3 build_all.py --samples 64 --res 1600 900
 ```
+
+Textures must exist before the builders run — materials fall back to flat grey
+if `textures/` is empty.
 
 Headless rendering needs a GL context:
 
@@ -148,6 +154,47 @@ Whites sit at **0.88, never 1.0**. Pure white clips, and a clipped surface can
 no longer pick up the green bounce — which is the whole point.
 
 ---
+
+## Matching the reference photograph
+
+The stadium was rebuilt to the structure of the reference rather than a
+generic bowl:
+
+| Reference feature | How it is built |
+|---|---|
+| Two seating tiers | `L_ROWS` 14 rows at R80–90, `U_ROWS` 13 rows at R92–103 |
+| Green signage band between tiers | `Signage_Module`, textured, positionally UV'd |
+| Dark canopy roof | `Roof_Module`, deliberately shallow (see below) |
+| Dense colourful crowd | 4×4 atlas, 16 figures, 94% seat occupancy |
+| Branded boundary boards | 6 invented brands, cycled round the boundary |
+| Floodlight pylons | wide lamp head, emissive, bloom does the glare |
+| Trees on the skyline | 46 stylised trees at R112 |
+| Big cumulus sky | procedural, projected onto a cloud plane |
+| Mown outfield stripes | shader, world-space, analytically antialiased |
+
+### Three mistakes worth not repeating
+
+**The canopy made the stands read as a black void.** A tall back wall plus a
+deep soffit put a solid dark band across every stand. Real roofs read as a
+thin edge from pitch level. `ROOF_REACH` dropped 8 m → 4 m and the back wall
+3.2 m → 1.6 m. A stadium bowl also bounces enormous light around its own
+interior, which no key-plus-sky rig reproduces — hence `StandFill`, a
+shadowless cool light standing in for interreflection.
+
+**Cloud "shadow" colour turned a sunny sky overcast.** Raising cloud coverage
+to match the reference exposed a base colour of 2.6 radiance, which at high
+coverage reads as storm cloud. Sunlit cumulus have *bright* bases; it is now
+5.0. Coverage and base brightness have to move together.
+
+**`recalc_face_normals` scrambles index-assigned UVs.** It can reverse a
+face's winding, which reorders its loops. The signage printed back to front,
+and flipping U during construction changed nothing because the reversal
+happened afterwards. Any text-bearing surface is now mapped from **world
+position** after the recalc, never from loop order.
+
+A fourth, less subtle one: the first reference render aimed the camera at the
+*shadowed* half of the bowl. With a key at azimuth 128°, the lit stands are on
+the −Y arc. Check which side the sun is on before blaming the lighting.
 
 ## Verified import
 

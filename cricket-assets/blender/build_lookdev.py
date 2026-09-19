@@ -39,6 +39,10 @@ CLOUD_LIT     = 10.5                     # radiance of a sunlit cumulus top
 SUN_ANGLE     = math.radians(2.5)        # soft shadow edges; default is 0.526
 BOUNCE_COLOR  = (0.350, 0.550, 0.200)
 BOUNCE_ENERGY = 0.80                     # ~17% of the key
+FILL_COLOR    = (0.780, 0.845, 1.000)    # cool, like open sky
+FILL_ENERGY   = 2.10
+FILL_ELEV     = 58.0
+FILL_AZIM     = 308.0                    # opposite the key
 EYE_HEIGHT    = 1.65
 
 
@@ -110,20 +114,23 @@ def build_sky_world():
     nt.links.new(uy.outputs[0], comb.inputs['Y'])
 
     mapping = nt.nodes.new('ShaderNodeMapping')
-    mapping.inputs['Scale'].default_value = (0.26, 0.26, 0.26)
+    mapping.inputs['Scale'].default_value = (0.19, 0.19, 0.19)
     nt.links.new(comb.outputs['Vector'], mapping.inputs['Vector'])
 
     noise = nt.nodes.new('ShaderNodeTexNoise')
     noise.inputs['Scale'].default_value = 1.9
-    noise.inputs['Detail'].default_value = 8.0
+    noise.inputs['Detail'].default_value = 9.0
     noise.inputs['Roughness'].default_value = 0.52
     nt.links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
 
     # a tight ramp turns soft noise into defined cumulus with hard-ish edges
     ramp = nt.nodes.new('ShaderNodeValToRGB')
     ramp.color_ramp.interpolation = 'EASE'
-    ramp.color_ramp.elements[0].position = 0.42
-    ramp.color_ramp.elements[1].position = 0.58
+    # Lower start = more sky covered. The reference is a busy cumulus sky, so
+    # coverage runs high; drop both numbers together to add more cloud without
+    # turning the edges to mush.
+    ramp.color_ramp.elements[0].position = 0.385
+    ramp.color_ramp.elements[1].position = 0.552
     nt.links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
 
     # fade the cloud layer out at the horizon (Math has no smoothstep in 5.0,
@@ -150,9 +157,10 @@ def build_sky_world():
     cloud_shade = nt.nodes.new('ShaderNodeValToRGB')
     cloud_shade.color_ramp.interpolation = 'EASE'
     cloud_shade.color_ramp.elements[0].position = 0.42
-    cloud_shade.color_ramp.elements[0].color = (2.6, 2.75, 3.1, 1.0)   # cool
-                                                                       # shadowed
-                                                                       # base
+    # Cloud SHADOW, not cloud grey. Set this too low and high coverage turns
+    # a sunny cumulus sky into overcast -- which is exactly what happened at
+    # 2.6. Sunlit cumulus have bright bases; they are not storm clouds.
+    cloud_shade.color_ramp.elements[0].color = (5.0, 5.2, 5.8, 1.0)
     cloud_shade.color_ramp.elements[1].position = 0.78
     cloud_shade.color_ramp.elements[1].color = (CLOUD_LIT, CLOUD_LIT * 0.995,
                                                 CLOUD_LIT * 0.97, 1.0)
@@ -195,7 +203,27 @@ def build_lights(col=None):
     if hasattr(bounce_data, 'use_shadow'):
         bounce_data.use_shadow = False
 
-    return col, sun, bounce
+    # Fill. A stadium bowl bounces an enormous amount of light around its own
+    # interior; with only a key and a low sky the stands read as a black void,
+    # which was the single worst artefact in the first renders. Shadows OFF --
+    # this is standing in for interreflection, not for a real light source.
+    fill_data = bpy.data.lights.new('StandFill', type='SUN')
+    fill_data.energy = FILL_ENERGY
+    fill_data.color = FILL_COLOR
+    fill_data.angle = math.radians(60.0)
+    if hasattr(fill_data, 'use_shadow'):
+        fill_data.use_shadow = False
+    fill = bpy.data.objects.new('StandFill', fill_data)
+    M.link(fill, col)
+    fe, fa = math.radians(FILL_ELEV), math.radians(FILL_AZIM)
+    fill.rotation_euler = (
+        math.acos(max(-1.0, min(1.0, math.sin(fe)))),
+        0.0,
+        math.atan2(math.cos(fe) * math.sin(fa), math.cos(fe) * math.cos(fa))
+        + math.pi * 0.5,
+    )
+
+    return col, sun, bounce, fill
 
 
 def add_camera_pov(col, name='Cam_BatsmanPOV', focal=26.0):
@@ -291,6 +319,35 @@ def _add_bloom(scene, strength=0.42, threshold=1.0, size=0.62):
     return ng
 
 
+def aim(obj, target):
+    """Point an object's -Z at a world-space target."""
+    from mathutils import Vector
+    direction = (Vector(target) - obj.location).normalized()
+    obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+    return obj
+
+
+def add_camera_reference(col, name='Cam_Reference', focal=50.0):
+    """Framed like the reference photograph: low across the outfield, stands
+    filling the middle band, sky above, grass in the foreground."""
+    cam_data = bpy.data.cameras.new(name)
+    cam_data.lens = focal
+    cam_data.clip_start = 0.05
+    cam_data.clip_end = 900.0
+    cam_data.dof.use_dof = True
+    cam_data.dof.focus_distance = 95.0
+    cam_data.dof.aperture_fstop = 8.0     # stands nearly sharp, as in the ref
+    cam = bpy.data.objects.new(name, cam_data)
+    M.link(cam, col)
+    # Look toward -Y. The key sits at azimuth 128 deg, so the stands on the
+    # -Y arc present their LIT inward faces to this camera. Aiming the other
+    # way photographs the shadowed half of the bowl, which is what made the
+    # first pass look like an overcast evening.
+    cam.location = (-4.0, 30.0, 2.35)
+    aim(cam, (0.0, -88.0, 13.0))
+    return cam
+
+
 def configure_render(engine='BLENDER_EEVEE', samples=48,
                      resolution=(1280, 720), bloom=False):
     """Exposure, tonemap and post. Fixed exposure -- never auto."""
@@ -342,12 +399,13 @@ def configure_render(engine='BLENDER_EEVEE', samples=48,
 
 def build(col=None, with_cameras=True):
     build_sky_world()
-    col, sun, bounce = build_lights(col)
+    col, sun, bounce, fill = build_lights(col)
     cams = {}
     if with_cameras:
         cams['pov'] = add_camera_pov(col)
         cams['hero'] = add_camera_hero(col)
-    return col, {'sun': sun, 'bounce': bounce, **cams}
+        cams['reference'] = add_camera_reference(col)
+    return col, {'sun': sun, 'bounce': bounce, 'fill': fill, **cams}
 
 
 if __name__ == '__main__':

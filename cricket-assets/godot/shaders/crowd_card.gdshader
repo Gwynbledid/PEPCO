@@ -23,8 +23,11 @@ uniform float bob_speed : hint_range(0.0, 6.0) = 1.4;
 uniform float sway_amount : hint_range(0.0, 0.3) = 0.02;
 
 group_uniforms Variation;
-uniform float tint_strength : hint_range(0.0, 1.0) = 0.55;
-uniform float value_spread : hint_range(0.0, 1.0) = 0.35;
+// The atlas now carries 16 distinct shirt colours, so tint is only a
+// subtle per-instance shift. At the old 0.55 it overwhelmed them and the
+// crowd went back to looking uniform.
+uniform float tint_strength : hint_range(0.0, 1.0) = 0.18;
+uniform float value_spread : hint_range(0.0, 1.0) = 0.22;
 
 varying flat vec2 atlas_offset;
 varying flat vec3 tint;
@@ -48,7 +51,7 @@ void vertex() {
 
 	// clothing tint: random hue, random value, never fully saturated
 	vec3 hue = vec3(hash11(id * 5.11), hash11(id * 7.31), hash11(id * 9.13));
-	float v = 0.55 + (r3 - 0.5) * value_spread;
+	float v = 1.0 + (r3 - 0.5) * value_spread;
 	tint = mix(vec3(1.0), normalize(hue + 0.25) * 1.7, tint_strength) * v;
 
 	// idle motion, de-synchronised by a per-instance phase
