@@ -31,7 +31,8 @@ blender/
   lib/mat.py            the palette + material builders
   build_ground.py       outfield, pitch, creases, stumps, boundary rope
   build_stadium.py      stand module, seat, crowd card, hoarding, sightscreen, floodlight
-  build_viewmodel.py    bat, gloves, forearms, helmet grille (first person)
+  build_viewmodel.py    bat, gloves, forearms (first person; NO grille)
+  build_character.py    pads, helmet + grille, shoes
   build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
   generate_textures.py  concrete, crowd atlas, seats, hoardings, signage
   lib/noise.py          tileable value noise / fBm / dirt streaks
@@ -223,6 +224,23 @@ stadium rather than two rings of terracing. Same for the roofline: a
 continuous ring of boards looks like a wall, so they go on two segments in
 every three.
 
+### Two geometry traps in the kit build
+
+**`M.ring()` only works for parts swept along Z.** It builds cross-sections in
+the XY plane, so lofting it along +Y bridges a stack of flat ellipses into a
+twisted ribbon. That turned the first shoe into a surfboard and the helmet peak
+into a vertical fin. Sweep direction and cross-section plane must be
+perpendicular: use `M.ring_xz()` for a Y-sweep, author along Z and rotate, or
+use `tube_along_path()`, which orients its own frames.
+
+**Two parts can only be rotated together if they share an origin.** `M.join()`
+leaves the joined object's origin at its *first child's* location. The shoe's
+origin was at zero and the stud cluster's was out at
+(-0.026, -0.0185, 0.238); rotating each about its own origin swung them to
+different places and the studs ended up floating in the air beside the shoe.
+Zero the origins *before* rotating. (This is the same class of bug as the
+module-origin one below, and it bit twice.)
+
 ### Five mistakes worth not repeating
 
 **The canopy made the stands read as a black void.** A tall back wall plus a
@@ -383,6 +401,17 @@ rather than broken:
   but it is the piece most worth revisiting if you ever show the stands close.
 - Kit, pads and gloves are still flat colour + roughness. Concrete, seats and
   the crowd are textured; the player-facing assets are not.
+- **The shoe does not read as a shoe.** Studs and sole are correct now, but the
+  upper is a low ridge with no toe box, heel counter or ankle collar, so it
+  looks like a chaise longue. It needs those as separate forms, not a single
+  swept profile. Lowest priority of the kit: invisible in POV, tiny in third
+  person.
+- **The helmet peak barely reads** from the front, and the grille hangs below
+  the shell rather than framing a face, because there is no head yet.
+- **The pad is acceptable but crude** -- the three shin bolsters are separate
+  tubes with gaps rather than a continuous padded face.
+- No body, no shirt, no trousers, no rig. The kit pieces exist; the character
+  they attach to does not.
 - No character rig. Bowler and fielders are not built — in POV they are distant
   and low-poly, so they are the next job, not the first.
 - **`Cam_Hero` is framed too low** — `renders/hero.png` is mostly ground with no

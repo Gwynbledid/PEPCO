@@ -119,60 +119,98 @@ def handle_axis_y(z):
 
 
 def build_glove(col, name, grip_z, theta_offset=0.0):
-    """A gloved fist WRAPPED AROUND the handle.
+    """A batting glove, wrapped around the handle.
 
-    The important idea: build the hand in cylindrical coordinates about the
-    handle axis, not as a free-standing hand you then try to place. Each
-    finger is a tube swept along a 245-degree arc at handle radius + finger
-    radius, so it is in contact with the bat by construction and cannot drift
-    off it when you retune the pose.
+    The previous version swept each finger through 245 degrees, which closed
+    them into concentric rings -- the whole hand read as a bedspring. Real
+    fingers curl about 180 degrees and no further, and their protection is
+    SEGMENTED ALONG the finger, not around it. So each finger here is a tube
+    swept along a 180-degree arc whose radius pulses three times down its
+    length, giving the sausage rolls of the reference kit, and the four sit
+    adjacent rather than spread. A single broad back-of-hand mass then covers
+    where all the roll ends meet, which is what stops the assembly reading as
+    loose tubing.
     """
     parts = []
-    finger_z = [grip_z + d for d in (0.0, 0.025, 0.049, 0.072)]
+    finger_z = [grip_z + d for d in (0.0, 0.026, 0.051, 0.075)]
+    # Fingers start INSIDE the back pad's angular span (which reaches ~141
+    # degrees) so the two meet. At 128 a sliver of bare handle showed between
+    # the knuckle pad and the finger bases.
+    A0, A1 = 142.0, -52.0          # 194 degrees of curl, no more
 
     for i, z in enumerate(finger_z):
         cy = handle_axis_y(z)
-        fr = 0.0135 - 0.0008 * i          # index thickest, little finger thinnest
-        R = HANDLE_R + fr * 0.85
-        pts = M.arc_points((0, cy), z, R,
-                           140 + theta_offset, -120 + theta_offset,
-                           14, z_drift=-0.004)
-        radii = [fr * (1.0 - 0.28 * (k / 14) ** 2) for k in range(15)]
-        parts.append(M.tube_along_path(f'{name}_f{i}', pts, radii, 8, col))
+        fr = 0.0132 - 0.0009 * i
+        R = HANDLE_R + fr * 0.92
+        steps = 20
+        pts = M.arc_points((0, cy), z, R, A0 + theta_offset, A1 + theta_offset,
+                           steps, z_drift=-0.003)
+        radii = []
+        for k in range(steps + 1):
+            t = k / steps
+            # three bulges along the finger = three protective rolls
+            roll = 1.0 + 0.17 * math.sin(t * math.pi * 3.0) ** 2
+            taper = 1.0 - 0.30 * t ** 1.6
+            radii.append(fr * roll * taper)
+        parts.append(M.tube_along_path(f'{name}_f{i}', pts, radii, 9, col))
 
-    # padded back of the hand, lying along the handle on the knuckle side
-    z0, z1 = finger_z[0] - 0.016, finger_z[-1] + 0.016
-    th = math.radians(188 + theta_offset)
-    Rb = HANDLE_R + 0.020
-    back_pts, back_r = [], []
-    for k in range(9):
-        t = k / 8
+    # Back of the hand: a FLAT, BROAD pad, not a round tube.
+    #
+    # A circular sweep here produced an egg stuck to the side of the bat. A
+    # hand's knuckle side is wide across and shallow front-to-back, so the
+    # cross-sections are ellipses -- narrow radially (away from the handle),
+    # wide tangentially -- built as rings perpendicular to the handle axis,
+    # which is exactly the plane M.ring() works in.
+    z0, z1 = finger_z[0] - 0.021, finger_z[-1] + 0.021
+    th = math.radians(186 + theta_offset)
+    Rb = HANDLE_R + 0.013
+    back_sections = []
+    for k in range(13):
+        t = k / 12
         z = z0 + (z1 - z0) * t
         cy = handle_axis_y(z)
-        back_pts.append((Rb * math.cos(th), cy + Rb * math.sin(th), z))
-        back_r.append(0.020 + 0.008 * math.sin(math.pi * t))
-    parts.append(M.tube_along_path(f'{name}_back', back_pts, back_r, 10, col))
+        swell = math.sin(math.pi * t) ** 0.7
+        back_sections.append(M.ring(
+            Rb * math.cos(th), cy + Rb * math.sin(th), z,
+            0.0135 + 0.0045 * swell,        # radial: shallow
+            0.0250 + 0.0090 * swell,        # tangential: broad
+            14, rounded=0.72))
+    parts.append(M.loft(f'{name}_back', back_sections, closed_caps=True,
+                        collection=col))
 
-    # thumb, crossing up the handle at an angle
-    zt = finger_z[0] - 0.004
+    # thumb: shorter, two rolls, crossing up and across the handle
+    zt = finger_z[0] - 0.006
     cyt = handle_axis_y(zt)
-    tp = M.arc_points((0, cyt), zt, HANDLE_R + 0.013,
-                      205 + theta_offset, 310 + theta_offset, 8, z_drift=0.030)
-    parts.append(M.tube_along_path(f'{name}_thumb', tp,
-                                   [0.0145] * 4 + [0.0125] * 3 + [0.010] * 2,
-                                   8, col))
+    tsteps = 12
+    tp = M.arc_points((0, cyt), zt, HANDLE_R + 0.012,
+                      200 + theta_offset, 305 + theta_offset, tsteps,
+                      z_drift=0.032)
+    tr = []
+    for k in range(tsteps + 1):
+        t = k / tsteps
+        tr.append(0.0150 * (1.0 + 0.15 * math.sin(t * math.pi * 2.0) ** 2)
+                  * (1.0 - 0.28 * t))
+    parts.append(M.tube_along_path(f'{name}_thumb', tp, tr, 9, col))
 
-    # cuff sits ABOVE the fingers: in a batting stance both wrists are above
-    # the hands, with the forearms angling back down to the body
+    # Wrist cuff. Barely flared -- the earlier cone read as a stack of discs,
+    # like a bucket on the end of the arm. A batting cuff is a close wrap with
+    # one strap band proud of it.
     zc = finger_z[-1] + 0.030
-    cuff = M.cone(f'{name}_cuff', r1=0.038, r2=0.047, depth=0.058, verts=14,
+    cuff = M.cone(f'{name}_cuff', r1=0.0335, r2=0.0375, depth=0.056, verts=18,
                   location=(0, handle_axis_y(zc), zc + 0.020), collection=col)
-    M.bevel(cuff, width=0.004, segments=2)
+    M.bevel(cuff, width=0.003, segments=2)
     M.apply_all_modifiers(cuff)
     parts.append(cuff)
 
+    strap = M.cone(f'{name}_strap', r1=0.0385, r2=0.0395, depth=0.013,
+                   verts=18, location=(0, handle_axis_y(zc), zc + 0.008),
+                   collection=col)
+    M.bevel(strap, width=0.0015, segments=2)
+    M.apply_all_modifiers(strap)
+    parts.append(strap)
+
     obj = M.join(parts, name)
-    M.shade_smooth(obj, angle_deg=40)
+    M.shade_smooth(obj, angle_deg=42)
     M.smart_uv(obj)
     mat.assign(obj, mat.pad_white())
     return obj
@@ -271,7 +309,7 @@ def attach_to_camera(camera, objs, collection=None,
     return rig
 
 
-def build(col=None):
+def build(col=None, include_grille=False):
     col = col or M.new_collection('Viewmodel')
     objs = [build_bat(col)]
 
@@ -288,7 +326,13 @@ def build(col=None):
         arm, sleeve = build_forearm(col, name, wrist, outward)
         objs += [arm, sleeve]
 
-    objs.append(build_helmet_grille(col))
+    # NO GRILLE IN THE POV. A grille overlay is authentic but it is exhausting
+    # to play behind -- it sits a few centimetres from the near plane, crosses
+    # the ball's flight path, and never goes away. Real broadcast POV shots
+    # omit it for the same reason. The mesh is still built by
+    # build_helmet_grille() for the third-person character, which needs it.
+    if include_grille:
+        objs.append(build_helmet_grille(col))
 
     # Re-anchor everything to the grip point so the whole viewmodel is
     # authored about (0,0,0). attach_to_camera() then positions the grip

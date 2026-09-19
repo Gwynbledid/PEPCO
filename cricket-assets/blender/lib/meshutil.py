@@ -332,3 +332,38 @@ def arc_points(centre, axis_z, radius, a_from, a_to, steps, z_drift=0.0):
                     cy + radius * _math.sin(a),
                     axis_z + z_drift * f))
     return out
+
+
+def apply_transform(obj, location=False, rotation=True, scale=True):
+    """Bake the object's transform into its mesh data.
+
+    Needed whenever a part is authored along one axis and then rotated into
+    place: leaving the rotation on the object means the exported glTF carries
+    it, and any later code that assigns `.location` or reads local coordinates
+    sees a different frame than the author intended.
+    """
+    activate(obj)
+    bpy.ops.object.transform_apply(location=location, rotation=rotation,
+                                   scale=scale)
+    return obj
+
+
+def ring_xz(cx, cz, y, rx, rz, n=12, rounded=1.0):
+    """A cross-section lying in the XZ plane, for lofting ALONG Y.
+
+    `ring()` always builds in the XY plane, so it is only correct for parts
+    swept along Z. Using it for something swept along Y -- a shoe, a helmet
+    peak -- bridges a stack of flat ellipses into a twisted ribbon, which is
+    exactly what turned the first shoe into a surfboard. Sweep direction and
+    cross-section plane must be perpendicular.
+    """
+    import math as _math
+    pts = []
+    for i in range(n):
+        t = 2.0 * _math.pi * i / n
+        ex, ez = _math.cos(t), _math.sin(t)
+        p = 2.0 + (1.0 - rounded) * 3.0
+        sx = _math.copysign(abs(ex) ** (2.0 / p), ex)
+        sz = _math.copysign(abs(ez) ** (2.0 / p), ez)
+        pts.append((cx + sx * rx, y, cz + sz * rz))
+    return pts
