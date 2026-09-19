@@ -35,7 +35,7 @@ SKY_STRENGTH  = 0.30                     # deliberately LOW. A full-strength
                                          # key dominates and the grass keeps
                                          # its colour. Measured, not guessed.
 EXPOSURE      = -2.0
-CLOUD_LIT     = 10.5                     # radiance of a sunlit cumulus top
+CLOUD_LIT     = 13.0                     # radiance of a sunlit cumulus top
 SUN_ANGLE     = math.radians(2.5)        # soft shadow edges; default is 0.526
 BOUNCE_COLOR  = (0.350, 0.550, 0.200)
 BOUNCE_ENERGY = 0.80                     # ~17% of the key
@@ -114,15 +114,11 @@ def build_sky_world():
     nt.links.new(uy.outputs[0], comb.inputs['Y'])
 
     mapping = nt.nodes.new('ShaderNodeMapping')
-    # Bigger cells = bigger clouds. The cloud-plane projection compresses
-    # everything toward the horizon, so a camera looking near-horizontally
-    # (which most cricket cameras do) sees the compressed band -- clouds have
-    # to be authored large to still read as cumulus down there.
-    mapping.inputs['Scale'].default_value = (0.115, 0.115, 0.115)
+    mapping.inputs['Scale'].default_value = (0.30, 0.30, 0.30)
     nt.links.new(comb.outputs['Vector'], mapping.inputs['Vector'])
 
     noise = nt.nodes.new('ShaderNodeTexNoise')
-    noise.inputs['Scale'].default_value = 1.9
+    noise.inputs['Scale'].default_value = 2.4
     noise.inputs['Detail'].default_value = 9.0
     noise.inputs['Roughness'].default_value = 0.52
     nt.links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
@@ -133,8 +129,14 @@ def build_sky_world():
     # Lower start = more sky covered. The reference is a busy cumulus sky, so
     # coverage runs high; drop both numbers together to add more cloud without
     # turning the edges to mush.
-    ramp.color_ramp.elements[0].position = 0.370
-    ramp.color_ramp.elements[1].position = 0.548
+    # RAMP WIDTH IS THE WHOLE GAME. These two numbers are 0.055 apart, and
+    # that narrowness is what gives cumulus their defined edges. At 0.18 apart
+    # the same noise renders as a flat grey haze at every camera elevation --
+    # it reads as pollution, not weather. Widen this and no amount of
+    # brightness, coverage or cloud size will rescue it; the edges are the
+    # cloud. Move the two stops together to change coverage.
+    ramp.color_ramp.elements[0].position = 0.460
+    ramp.color_ramp.elements[1].position = 0.515
     nt.links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
 
     # fade the cloud layer out at the horizon (Math has no smoothstep in 5.0,
@@ -160,12 +162,12 @@ def build_sky_world():
     # what stops the clouds reading as flat paper cut-outs.
     cloud_shade = nt.nodes.new('ShaderNodeValToRGB')
     cloud_shade.color_ramp.interpolation = 'EASE'
-    cloud_shade.color_ramp.elements[0].position = 0.42
+    cloud_shade.color_ramp.elements[0].position = 0.50
     # Cloud SHADOW, not cloud grey. Set this too low and high coverage turns
     # a sunny cumulus sky into overcast -- which is exactly what happened at
     # 2.6. Sunlit cumulus have bright bases; they are not storm clouds.
     cloud_shade.color_ramp.elements[0].color = (5.0, 5.2, 5.8, 1.0)
-    cloud_shade.color_ramp.elements[1].position = 0.78
+    cloud_shade.color_ramp.elements[1].position = 0.66
     cloud_shade.color_ramp.elements[1].color = (CLOUD_LIT, CLOUD_LIT * 0.995,
                                                 CLOUD_LIT * 0.97, 1.0)
     nt.links.new(noise.outputs['Fac'], cloud_shade.inputs['Fac'])

@@ -181,6 +181,15 @@ thin edge from pitch level. `ROOF_REACH` dropped 8 m → 4 m and the back wall
 interior, which no key-plus-sky rig reproduces — hence `StandFill`, a
 shadowless cool light standing in for interreflection.
 
+**Cloud ramp WIDTH is the whole game.** The density ramp's two stops sit
+0.055 apart, and that narrowness is what gives cumulus their defined edges.
+At 0.18 apart the identical noise renders as flat grey haze at *every* camera
+elevation — it reads as pollution, not weather. No amount of brightness,
+coverage or cloud size rescues it, because the edges are the cloud. Two
+tempting wrong turns on the way here: raising coverage (made it more overcast)
+and enlarging the cells (made the noise so low-frequency it went smooth). Move
+the two stops *together* to change coverage; keep the gap tight.
+
 **Cloud "shadow" colour turned a sunny sky overcast.** Raising cloud coverage
 to match the reference exposed a base colour of 2.6 radiance, which at high
 coverage reads as storm cloud. Sunlit cumulus have *bright* bases; it is now
@@ -294,6 +303,9 @@ rather than broken:
 - **Forearms are bare skin cylinders** — plausible in silhouette, crude up
   close, and they are 0.5 m from the camera. Long sleeves would hide most of
   this cheaply.
+- **Hoarding brand text is not legible at true distance.** The taglines read;
+  the brand line needs larger type in `generate_textures.hoarding()` if you
+  want it readable from the middle of the ground.
 - **The stand module is hard to read in isolation** — the roof slab dominates
   and the terracing behind it is barely visible. Fine at stadium distance,
   but it is the piece most worth revisiting if you ever show the stands close.
