@@ -194,7 +194,7 @@ def assemble(col=None, stance_deg=-78.0, with_bat=True):
     objs += helmet_parts
 
     # pads on the shins, shoes under the ankles
-    for sgn in (-1, 1):
+    for sgn, side in ((-1, 'L'), (1, 'R')):
         ax = sgn * (HIP_X + 0.012)
         for src_key, loc, rot in (
                 ('Pad',        (ax, 0.062, 0.070), (0, 0, 0)),
@@ -209,6 +209,11 @@ def assemble(col=None, stance_deg=-78.0, with_bat=True):
             # placements anyway. Instancing is for the stadium's thousands of
             # repeats; a single character is not worth the constraint.
             o.data = src.data.copy()
+            # Name the side EXPLICITLY. Left to itself Blender appends .001 /
+            # .002, and the rig's bone-binding map keys off these names -- the
+            # kit silently went unbound the first time.
+            o.name = f'{src_key}.{side}'
+            o.data.name = o.name
             o.location = loc
             o.rotation_euler = rot
             M.link(o, col)

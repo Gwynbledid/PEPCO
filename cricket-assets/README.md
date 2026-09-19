@@ -34,6 +34,8 @@ blender/
   build_viewmodel.py    bat, gloves, forearms (first person; NO grille)
   build_character.py    pads, helmet + grille, shoes
   build_body.py         torso, arms, legs, head, and the assembled batsman
+  build_rig.py          21-bone armature, skinning and rigid bone binding
+  export_character.py   skinned batsman.glb for the engine
   build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
   generate_textures.py  concrete, crowd atlas, seats, hoardings, signage
   lib/noise.py          tileable value noise / fBm / dirt streaks
@@ -166,6 +168,32 @@ variety — caps, raised arms, flags, leaning, varied heights. Silhouette is
 what survives at 80 m. Colour only stops it looking like a repeating pattern,
 which is why per-instance tint dropped to 0.18 once the atlas carried its own.
 
+## Rigging
+
+21 bones: root, hips, spine, chest, neck, head, shoulder/upperarm/forearm/hand
+per side, thigh/shin/foot per side, and a `bat` bone parented to `hand.R` so a
+swing is one bone's rotation.
+
+**Two binding strategies, deliberately.** Soft parts -- torso, arms, legs,
+sleeves, head -- take automatic weights so they bend at the joints. Rigid parts
+-- helmet, pads, shoes, gloves, bat -- get a single vertex group at weight 1.0
+naming their bone and bind with `ARMATURE_NAME`. A helmet is a solid object
+that travels with the head; running automatic weights over it would smear it
+across two or three bones and visibly warp it every time the neck turned.
+
+Two things that bite here:
+
+- **Name the left/right kit copies explicitly.** Blender appends `.001` /
+  `.002` to duplicates, and the bone-binding map keys off names -- the entire
+  kit silently went unbound the first time, reporting success while nothing
+  was attached. `build_rig.py` prints an UNBOUND list for exactly this reason;
+  it should always be empty.
+- **`export_apply` must be False** when exporting a rig. Applying modifiers
+  bakes out the Armature modifier and ships a statue.
+
+Verified end to end: Godot 4.3 imports `batsman.glb` as one Skeleton3D with
+21 bones and 20 skinned MeshInstance3Ds.
+
 ## Colour space
 
 Palette values in `lib/mat.py` are written as **sRGB** — the numbers you would
@@ -224,6 +252,15 @@ that dark horizontal band is most of what makes the bowl read as a real
 stadium rather than two rings of terracing. Same for the roofline: a
 continuous ring of boards looks like a wall, so they go on two segments in
 every three.
+
+### The bat
+
+Built from polygonal cross-sections, not a superellipse: flat face, vertical
+side walls, chamfered shoulders and a central spine down the back. That
+silhouette is the whole difference between a cricket bat and a rounded paddle,
+and no amount of tuning a rounded profile gets there. Every section in the
+loft must carry the same vertex count, so the round handle rings are resampled
+to the blade's 28.
 
 ### Two geometry traps in the kit build
 
@@ -415,9 +452,8 @@ rather than broken:
   as distinct hands. Fine in POV where they are close; weaker here.
 - **In pure side view the bat sits slightly clear of the near hand.** Front and
   three-quarter views read correctly.
-- **No rig and no animation.** The batsman is a single posed assembly;
-  `stance_deg` turns the whole figure but nothing articulates. Any real
-  gameplay needs bones.
+- No animation clips yet. The rig works and poses correctly, but nothing is
+  keyframed -- idle, stance, shot and run cycles all still need authoring.
 - **The head is a featureless sphere.** It is almost entirely hidden by the
   helmet, which is why it has not been given a face.
 - No character rig. Bowler and fielders are not built — in POV they are distant

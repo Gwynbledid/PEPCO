@@ -31,78 +31,145 @@ GRIP_ANCHOR = 0.660      # bottom-hand grip: the viewmodel's pivot
 RING_SEG    = 16
 
 
-def _blade_profile(t):
-    """t: 0 at the toe, 1 at the shoulders. Returns (half_width, back_y).
+def _poly_section(corners, counts, z):
+    """Resample a closed polygon into a fixed-count ring at height z.
 
-    The swell -- the thickest point of the back -- sits at t~0.34, which is
-    the sweet spot. Getting this bulge right is what makes a bat read as a bat
-    rather than a plank.
+    The blade needs a cross-section with real corners -- flat face, vertical
+    side walls, chamfers and a central spine -- which a superellipse cannot
+    express. Every section must carry the SAME vertex count for the loft to
+    bridge, so each edge gets a fixed number of samples.
     """
-    if t < 0.06:
-        hw = 0.049 + 0.005 * (t / 0.06)          # rounded toe
-    elif t < 0.78:
-        hw = 0.054
-    else:
-        hw = 0.054 - 0.021 * ((t - 0.78) / 0.22)  # shoulders draw in
+    pts = []
+    n = len(corners)
+    for i in range(n):
+        x0, y0 = corners[i]
+        x1, y1 = corners[(i + 1) % n]
+        for k in range(counts[i]):
+            f = k / counts[i]
+            pts.append((x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, z))
+    return pts
 
-    if t < 0.34:
-        back = 0.018 + 0.044 * (t / 0.34) ** 0.7
-    elif t < 0.80:
-        back = 0.062 - 0.020 * ((t - 0.34) / 0.46)
+
+# face, right wall, right chamfer, spine, left chamfer, left wall, close
+_BLADE_COUNTS = [8, 3, 4, 3, 3, 4, 3]
+BLADE_RING = sum(_BLADE_COUNTS)
+
+
+def _blade_profile(t):
+    """t: 0 at the toe, 1 at the shoulders. Returns (half_width, spine_depth).
+
+    The swell -- the thickest point of the back -- sits at t~0.33, the sweet
+    spot. Getting this right is what makes a bat read as a bat rather than a
+    plank.
+    """
+    if t < 0.055:
+        hw = 0.0455 + 0.0085 * math.sin(math.pi * 0.5 * (t / 0.055))
+    elif t < 0.86:
+        hw = 0.0540
     else:
-        back = 0.042 - 0.020 * ((t - 0.80) / 0.20)
+        u = (t - 0.86) / 0.14          # shoulders draw in on a curve
+        hw = 0.0540 - 0.0245 * (u ** 1.55)
+
+    if t < 0.33:
+        back = 0.017 + 0.048 * (t / 0.33) ** 0.62
+    elif t < 0.72:
+        back = 0.065 - 0.016 * ((t - 0.33) / 0.39)
+    else:
+        back = 0.049 - 0.021 * ((t - 0.72) / 0.28) ** 1.2
     return hw, back
 
 
+def _blade_corners(hw, yb):
+    """Flat face, vertical side walls, chamfered shoulders, central spine.
+
+    This silhouette is the whole difference between a cricket bat and a
+    rounded paddle: the face is dead flat, the back peaks along a ridge, and
+    the two meet through chamfers rather than a continuous curve.
+    """
+    yf = FACE_Y
+    wall = yf + (yb - yf) * 0.34
+    return [
+        (-hw, yf),                # face, left to right
+        (hw, yf),
+        (hw, wall),               # right side wall
+        (hw * 0.58, yb * 0.93),   # right chamfer
+        (0.0, yb),                # spine
+        (-hw * 0.58, yb * 0.93),  # left chamfer
+        (-hw, wall),              # left side wall
+    ]
+
+
 def build_bat(col):
+    """Blade, splice and handle with a knob.
+
+    The blade lofts from polygonal sections, the splice morphs that section
+    into a circle, and the handle is round with a flared knob. Every section
+    must share a vertex count, so the round rings are resampled to BLADE_RING.
+    """
     sections = []
-    STEPS = 26
+
+    STEPS = 30
     for i in range(STEPS + 1):
         t = i / STEPS
         z = t * BLADE_LEN
-        hw, back = _blade_profile(t)
-        cy = (back + FACE_Y) * 0.5
-        ry = (back - FACE_Y) * 0.5
-        # squarish near the middle of the blade, rounder at toe and shoulders
-        rounded = 0.30 + 0.45 * max(0.0, (abs(t - 0.45) - 0.25) / 0.30)
-        sections.append(M.ring(0, cy, z, hw, ry, RING_SEG,
-                               rounded=min(rounded, 0.9)))
+        hw, yb = _blade_profile(t)
+        sections.append(_poly_section(_blade_corners(hw, yb),
+                                      _BLADE_COUNTS, z))
 
-    # splice -> handle: converge onto a round shaft
-    for i in range(1, 13):
-        t = i / 12
-        z = BLADE_LEN + t * HANDLE_LEN
-        r = 0.033 * (1 - t) + 0.0155 * t
-        cy = (0.031 * (1 - t))
-        sections.append(M.ring(0, cy, z, r, r * 1.05, RING_SEG,
-                               rounded=0.55 + 0.45 * t))
+    def _circle(r, cy, z):
+        return [(r * math.cos(2.0 * math.pi * k / BLADE_RING),
+                 cy + r * math.sin(2.0 * math.pi * k / BLADE_RING), z)
+                for k in range(BLADE_RING)]
+
+    # splice: blend the blade section into a round shaft
+    SPL = 10
+    for i in range(1, SPL + 1):
+        f = i / SPL
+        z = BLADE_LEN + f * 0.075
+        hw, yb = _blade_profile(1.0)
+        poly = _poly_section(_blade_corners(hw * (1 - f * 0.55),
+                                            yb * (1 - f * 0.42)),
+                             _BLADE_COUNTS, z)
+        r = 0.0300 * (1 - f) + 0.0205 * f
+        cy = (FACE_Y + yb) * 0.5 * (1 - f) + 0.026 * f
+        circ = _circle(r, cy, z)
+        sections.append([(px * (1 - f) + cx * f, py * (1 - f) + cyy * f, z)
+                         for (px, py, _), (cx, cyy, _) in zip(poly, circ)])
+
+    # handle shaft, then the knob
+    HST = 16
+    z0 = BLADE_LEN + 0.075
+    for i in range(1, HST + 1):
+        f = i / HST
+        z = z0 + f * (TOTAL_LEN - z0)
+        r = 0.0205 - 0.0018 * f
+        if f > 0.90:
+            r += 0.0085 * ((f - 0.90) / 0.10) ** 0.7
+        sections.append(_circle(r, 0.026 * (1.0 - f * 0.92), z))
 
     bat = M.loft('Bat_Blade', sections, closed_caps=True, collection=col)
-    M.bevel(bat, width=0.0022, segments=2, angle_deg=28)
+    M.bevel(bat, width=0.0018, segments=2, angle_deg=32)
     M.apply_all_modifiers(bat)
-    M.shade_smooth(bat, angle_deg=42)
+    M.shade_smooth(bat, angle_deg=34)
     M.smart_uv(bat)
     mat.assign(bat, mat.willow())
 
-    # rubber grip sleeve over the handle
     grip_sections = []
-    for i in range(19):
-        t = i / 18
-        z = GRIP_BOTTOM + t * (TOTAL_LEN - GRIP_BOTTOM)
-        base = 0.0195
-        # three raised bands, the way a grip is actually rolled on
-        band = 0.0016 * max(0.0, math.sin(t * math.pi * 3.0)) ** 2
-        flare = 0.0022 if t > 0.94 else 0.0
-        cy = 0.031 * max(0.0, 1.0 - (z - BLADE_LEN) / HANDLE_LEN) if z > BLADE_LEN else 0.031
-        r = base + band + flare
-        grip_sections.append(M.ring(0, cy, z, r, r * 1.05, RING_SEG, rounded=0.95))
+    for i in range(22):
+        f = i / 21
+        # stop short of the top so the flared knob stays visible
+        z = GRIP_BOTTOM + f * (TOTAL_LEN - 0.034 - GRIP_BOTTOM)
+        band = 0.0018 * max(0.0, math.sin(f * math.pi * 3.5)) ** 2
+        span = max(TOTAL_LEN - BLADE_LEN - 0.075, 1e-6)
+        cy = 0.026 * max(0.0, 1.0 - (z - BLADE_LEN - 0.075) / span) * 0.92
+        r = 0.0225 + band
+        grip_sections.append(M.ring(0, cy, z, r, r, 18, rounded=1.0))
     grip = M.loft('Bat_Grip', grip_sections, closed_caps=True, collection=col)
     M.shade_smooth(grip, angle_deg=45)
     M.smart_uv(grip)
     mat.assign(grip, mat.grip())
 
     obj = M.join([bat, grip], 'Bat')
-    # origin at the bottom hand so the engine rotates the bat about the wrists
     M.set_origin(obj, (0, 0, GRIP_ANCHOR))
     return obj
 
