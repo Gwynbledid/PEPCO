@@ -335,7 +335,7 @@ def aim(obj, target):
     return obj
 
 
-def add_camera_reference(col, name='Cam_Reference', focal=50.0):
+def add_camera_reference(col, name='Cam_Reference', focal=35.0):
     """Framed like the reference photograph: low across the outfield, stands
     filling the middle band, sky above, grass in the foreground."""
     cam_data = bpy.data.cameras.new(name)
@@ -351,8 +351,13 @@ def add_camera_reference(col, name='Cam_Reference', focal=50.0):
     # -Y arc present their LIT inward faces to this camera. Aiming the other
     # way photographs the shadowed half of the bowl, which is what made the
     # first pass look like an overcast evening.
+    # Wider and aimed higher than feels natural for a stands-only shot. The
+    # pylon heads sit 62 m up at ~110 m out, which is 25 deg above the
+    # horizon; a 50 mm lens aimed at the seating decks crops them off entirely
+    # and the stadium loses its skyline. The reference gives roughly half the
+    # frame to sky for exactly this reason.
     cam.location = (-4.0, 30.0, 2.35)
-    aim(cam, (0.0, -88.0, 13.0))
+    aim(cam, (0.0, -88.0, 30.0))
     return cam
 
 
