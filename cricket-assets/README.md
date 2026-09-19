@@ -223,11 +223,40 @@ that way and invent your own brands.
 
 ## Known gaps
 
-- No textures yet. Materials are flat colour + roughness; UVs are unwrapped and
-  ready. The crowd atlas (`crowd_card.gdshader`, 4×4 cells) needs authoring.
+Visible in `renders/pov.png`, listed honestly so you know what is unfinished
+rather than broken:
+
+- **The stand interior reads near-black.** The roof cantilever shades the upper
+  tier and nothing fills it. Real grounds bounce a lot of light around inside
+  the bowl. Fix by raising `ambient_light_energy` for the stadium specifically,
+  shortening the roof in `build_stadium.build_stand_module()`, or adding a dim
+  fill light aimed into the stands. This is the most visible remaining issue.
+- **The crowd is untextured**, so cards read as dark blocks. The 4×4 atlas that
+  `crowd_card.gdshader` expects has not been authored. The shader's tint and
+  bob variation cannot do their job until it exists.
+- **The bat presents edge-on** in the default stance, so the face is hidden.
+  Adjust `yaw_deg` in `attach_to_camera()` / `VM_YAW_DEG` if you want more face.
+- **Forearms are bare skin cylinders** — plausible in silhouette, crude up
+  close, and they are 0.5 m from the camera. Long sleeves would hide most of
+  this cheaply.
+- No textures anywhere. Materials are flat colour + roughness; UVs are
+  unwrapped and ready for painting.
 - No character rig. Bowler and fielders are not built — in POV they are distant
   and low-poly, so they are the next job, not the first.
-- No animation.
-- `lookdev.tscn` is validated as loading correctly in Godot 4.3 headless, but
-  has not been rendered in Godot — there is no GPU here. Expect to adjust
-  `light_energy` and `adjustment_saturation` by eye once you see it running.
+- **`Cam_Hero` is framed too low** — `renders/hero.png` is mostly ground with no
+  sky. The depth of field and the creases read nicely, but the framing needs
+  raising and tilting up in `build_lookdev.add_camera_hero()`. It is a preview
+  camera only; nothing in the game depends on it.
+- No animation, no ball, no physics.
+- `lookdev.tscn` is verified to load correctly in Godot 4.3 headless, but has
+  **not been rendered in Godot** — there is no GPU in the environment it was
+  built in. Expect to adjust `light_energy` and `adjustment_saturation` by eye
+  once you see it running.
+
+### Suggested order of work from here
+
+1. Fill light in the stands (one number, biggest visual win).
+2. Crowd atlas — 16 spectator cutouts, 1024², alpha.
+3. Textures for the kit and pads; the UVs are already there.
+4. Bowler and fielder low-poly characters.
+5. Ball, physics and shot animation.
