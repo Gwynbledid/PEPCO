@@ -226,12 +226,15 @@ def build_hoarding_panel(col, index=0):
     M.bevel(obj, width=0.02, segments=2)
     M.apply_all_modifiers(obj)
     M.shade_smooth(obj, angle_deg=35)
-    # planar UV on the inward face so the artwork is not wrapped round the box
+    # Planar UV so the artwork is not wrapped round the box. U is NEGATED:
+    # the panel is rotated to face the middle of the ground, so its local +X
+    # points to the viewer's LEFT and un-negated text reads back to front --
+    # the same mirroring that caught the signage, on a different surface.
     uvl = obj.data.uv_layers[0] if obj.data.uv_layers else obj.data.uv_layers.new(name='UVMap')
     for poly in obj.data.polygons:
         for li in poly.loop_indices:
             co = obj.data.vertices[obj.data.loops[li].vertex_index].co
-            uvl.data[li].uv = (co.x / 8.0 + 0.5, co.z / 1.15)
+            uvl.data[li].uv = (0.5 - co.x / 8.0, co.z / 1.15)
     mat.assign(obj, mat.hoarding_tex(index % N_BRANDS))
     return obj
 

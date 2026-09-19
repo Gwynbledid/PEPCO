@@ -114,7 +114,11 @@ def build_sky_world():
     nt.links.new(uy.outputs[0], comb.inputs['Y'])
 
     mapping = nt.nodes.new('ShaderNodeMapping')
-    mapping.inputs['Scale'].default_value = (0.19, 0.19, 0.19)
+    # Bigger cells = bigger clouds. The cloud-plane projection compresses
+    # everything toward the horizon, so a camera looking near-horizontally
+    # (which most cricket cameras do) sees the compressed band -- clouds have
+    # to be authored large to still read as cumulus down there.
+    mapping.inputs['Scale'].default_value = (0.115, 0.115, 0.115)
     nt.links.new(comb.outputs['Vector'], mapping.inputs['Vector'])
 
     noise = nt.nodes.new('ShaderNodeTexNoise')
@@ -129,8 +133,8 @@ def build_sky_world():
     # Lower start = more sky covered. The reference is a busy cumulus sky, so
     # coverage runs high; drop both numbers together to add more cloud without
     # turning the edges to mush.
-    ramp.color_ramp.elements[0].position = 0.385
-    ramp.color_ramp.elements[1].position = 0.552
+    ramp.color_ramp.elements[0].position = 0.370
+    ramp.color_ramp.elements[1].position = 0.548
     nt.links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
 
     # fade the cloud layer out at the horizon (Math has no smoothstep in 5.0,
