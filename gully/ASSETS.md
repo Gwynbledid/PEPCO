@@ -215,14 +215,21 @@ Three things I need from you in writing with the files:
 ### What changes in the code, and what it costs
 
 Loading a `.glb` needs `GLTFLoader` — a new import from the three.js CDN — and
-meshopt-compressed files also need `meshopt_decoder`. **That is a new dependency
-and I will not add it without you saying so.**
+meshopt-compressed files also need `meshopt_decoder`.
 
-It also **ends "one file"**. A 4 MB asset should not be base64-inlined into the
-HTML. The game becomes a folder. That is a real decision: the standing
-constraint has been one file with no npm dependencies since the first commit, and
-the eventual offline APK assumed everything was vendorable into it. A folder is
-still packageable, but say it out loud before the work starts.
+**Both decisions have now been taken.** `GLTFLoader` is imported via a
+`"three/addons/"` importmap prefix, and the game is a folder: `index.html`,
+`sponsors.json` and `assets/`. Like the other two CDN entries, the addons prefix
+has to be rewritten to a relative path before the offline APK is built.
+
+`assets/viewmodel.glb` (318 KB) is in and carries the first-person bat and
+gloves. The forearms in that file are not used — they are rigid stubs in bat
+space and cannot reach a shoulder that moves with the player, so the two
+procedural arms still run from the shoulders to the handle. The model's own UVs
+are a generic unwrap with no flat blade island, so the blade gets a planar XY
+projection in code and the `sponsors.json` bat decal lands where it always did.
+If a future export supplies the blade UV rectangle §8 asks for, that projection
+can go.
 
 ## 9. The design consequence nobody mentions until it is too late
 

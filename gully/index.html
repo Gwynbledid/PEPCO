@@ -246,12 +246,14 @@
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
     "vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
   }
 }
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FilesetResolver, PoseLandmarker } from 'vision';
 
 /* ════════════════════════════════════════════════════════════════
@@ -345,16 +347,17 @@ const STEP_LABEL = {
   wasm:       'mediapipe wasm',
   model:      'pose model',
   sponsors:   'sponsors.json',
+  viewmodel:  'bat model',
 };
-const STEP_SHORT = { permission:'perm', camera:'cam', wasm:'wasm', model:'model', sponsors:'sponsors' };
-const STEP_ORDER = ['permission','camera','wasm','model','sponsors'];
+const STEP_SHORT = { permission:'perm', camera:'cam', wasm:'wasm', model:'model', sponsors:'sponsors', viewmodel:'bat' };
+const STEP_ORDER = ['permission','camera','wasm','model','sponsors','viewmodel'];
 
 // full while anything is pending or broken, mini once it is all green,
 // because the panel is standing in front of the game the player came for
 let dbgMode = 'full';
 
 const Diag = {
-  state: { permission:['wait',''], camera:['wait',''], wasm:['wait',''], model:['wait',''], sponsors:['wait',''] },
+  state: { permission:['wait',''], camera:['wait',''], wasm:['wait',''], model:['wait',''], sponsors:['wait',''], viewmodel:['wait',''] },
   camWant: '960x720, 60fps ideal / 24 min',
   camGot: '-', camMeasured: 0,
   delegate: '-', gpuNote: '',
@@ -878,6 +881,11 @@ const batMat  = new THREE.MeshLambertMaterial({ color:0xD8B888 });              
 const gripMat = new THREE.MeshLambertMaterial({ color:0x1B1F23 });               // rubber
 const caneMat = new THREE.MeshLambertMaterial({ color:0xC9A87A });
 const bat = new THREE.Group();
+/* Every material the bat fade has to drive. The loaded model appends its glove
+   material here; the fade code reads the array, so it never has to know which
+   bat it is looking at. */
+const batMats = [batMat, gripMat, caneMat];
+const primitiveBat = [];
 (function buildBat(){
   const W = BAT_HALF_W*2, D = 0.044;
   const half = BAT_LEN/2;                                   // 0.45
@@ -885,6 +893,7 @@ const bat = new THREE.Group();
     const m = new THREE.Mesh(geo, mat);
     m.position.set(0, y, z || 0);
     bat.add(m);
+    primitiveBat.push(m);
     return m;
   };
   // blade: toe at -0.45 up to the shoulders at +0.09
@@ -972,6 +981,114 @@ function aimArm(g, sx, sy, sz, hx, hy, hz){
   g.userData.fore.position.y = len/2;
   g.userData.glove.position.set(0, len, 0);
   g.quaternion.setFromUnitVectors(ARM_UP, armDir.set(dx/len, dy/len, dz/len));
+}
+
+/* THE MODELLED BAT.
+
+   `assets/viewmodel.glb` is a proper bat and a pair of gloves — 5,246 triangles
+   for the bat, 5,020 for the gloves, no textures, 318KB. It replaces the eight
+   boxes and cylinders above and the two spheres that stood in for gloves.
+
+   This changes what is DRAWN and nothing else. The hit test, `Bat.restX`,
+   `shotLine` and the draw smoothing all read `bat.position` and `bat.rotation.z`
+   exactly as before, which is why the swap is safe: the last time presentation
+   and input got tangled together it cost a rewrite and a ruined build.
+
+   Three things have to line up or it will not read as the same bat:
+
+     1. Scale and centre. The model is 0.85m from toe to handle cap with its
+        origin at the grip; the game's convention is BAT_LEN long, centred, +y
+        toward the handle. Both are measured off the geometry here rather than
+        hardcoded, so re-exporting the asset at a different size still works.
+
+     2. The sponsor. The model's own UVs are a generic unwrap with no flat blade
+        island — the handoff never supplied the UV rectangle ASSETS.md asked for
+        — so the sponsor canvas would land on it as noise. The blade gets a
+        planar XY projection instead, over exactly the span the old box occupied
+        (toe to shoulder, 0.54m), which reproduces what BoxGeometry was doing.
+        Anything above the shoulder runs off the top of the canvas into plain
+        willow, which is what the splice should look like anyway.
+
+     3. The hands. The model's gloves sit at 0.29 and 0.40 up from the bat
+        centre; the arms are aimed at 0.27 and 0.41. That is close enough to
+        leave aimArm alone — the forearms still run from the shoulders to the
+        handle, so they still track. Their sphere gloves get switched off,
+        because the model brings real ones.
+
+   If the load fails the primitive bat stays and the step says so. A missing
+   asset is a worse-looking game, not a broken one. */
+const gloveMat2 = new THREE.MeshLambertMaterial({ color:0xC8C4BA });
+
+function fitBlade(geo){
+  // planar projection across the blade, matching the 128x512 sponsor canvas
+  const pos = geo.attributes.position, n = pos.count;
+  const uv = new Float32Array(n*2);
+  const y0 = -BAT_LEN/2, y1 = y0 + 0.54;             // toe -> shoulder
+  for(let i=0;i<n;i++){
+    uv[i*2]     = (pos.getX(i) + BAT_HALF_W) / (BAT_HALF_W*2);
+    uv[i*2 + 1] = (pos.getY(i) - y0) / (y1 - y0);
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+async function loadViewmodel(){
+  step('viewmodel', 'wait', 'assets/viewmodel.glb');
+  try{
+    const gltf = await new GLTFLoader().loadAsync('./assets/viewmodel.glb');
+    const root = gltf.scene;
+    root.updateMatrixWorld(true);
+
+    // measure the bat itself, not the gloves, or the gloves would set the scale
+    const batNode = root.getObjectByName('Bat');
+    if(!batNode) throw new Error('no node named "Bat" in the file');
+    const box = new THREE.Box3().setFromObject(batNode);
+    const len = box.max.y - box.min.y;
+    if(!(len > 0.2)) throw new Error('bat measured ' + len.toFixed(3) + 'm, expected ~0.85');
+    const s   = BAT_LEN / len;
+    const off = -((box.min.y + box.max.y) / 2) * s;   // centre it, +y to the handle
+
+    const fix = new THREE.Matrix4().makeTranslation(0, off, 0)
+                                   .multiply(new THREE.Matrix4().makeScale(s, s, s));
+    const keep = ['Bat', 'Glove_Top', 'Glove_Bottom'];   // forearms cannot reach a moving shoulder
+    const taken = [];
+    root.traverse(o => { if(o.isMesh) taken.push(o); });
+
+    let tris = 0;
+    for(const m of taken){
+      // the node the artist named, not the primitive, decides what we keep
+      let owner = m, name = null;
+      while(owner){ if(keep.includes(owner.name)){ name = owner.name; break; } owner = owner.parent; }
+      if(!name) continue;
+
+      const geo = m.geometry.clone();
+      geo.applyMatrix4(m.matrixWorld);                 // bake the file's own hierarchy
+      geo.applyMatrix4(fix);                           // then into the game's bat space
+
+      const src = Array.isArray(m.material) ? m.material[0] : m.material;
+      const srcName = (src && src.name) || '';
+      let mat;
+      if(srcName === 'M_Willow'){ mat = batMat; fitBlade(geo); }
+      else if(srcName === 'M_Grip'){ mat = gripMat; }
+      else { mat = gloveMat2; }
+
+      bat.add(new THREE.Mesh(geo, mat));
+      tris += geo.index ? geo.index.count/3 : geo.attributes.position.count/3;
+    }
+    if(tris < 100) throw new Error('kept only ' + tris + ' triangles');
+
+    // the primitives were added first; drop them now the model is in
+    for(const m of primitiveBat) bat.remove(m);
+    for(const a of arms) a.userData.glove.visible = false;
+    batMats.push(gloveMat2);
+
+    // every geometry above was cloned before it was touched, so the file's own
+    // copies — kept and discarded alike — are all dead weight now
+    root.traverse(o => { if(o.isMesh) o.geometry.dispose(); });
+
+    step('viewmodel', 'ok', Math.round(tris) + ' tris, ' + (s*100).toFixed(0) + '% scale');
+  }catch(err){
+    step('viewmodel', 'warn', 'built-in bat — ' + ((err && err.message) || err));
+  }
 }
 
 // shadow puck under the bat, sells the position
@@ -2159,7 +2276,7 @@ function loop(now){
   const fade = shown ? clamp((BAT_HOLD_MS - age)/(BAT_HOLD_MS*0.35), 0, 1) : 1;
   if(batFade !== fade){
     batFade = fade;
-    for(const m of [batMat, gripMat, caneMat]){ m.transparent = fade < 1; m.opacity = fade; }
+    for(const m of batMats){ m.transparent = fade < 1; m.opacity = fade; }
   }
 
   // --- bat mesh ---
@@ -2617,6 +2734,7 @@ $('startBtn').addEventListener('click', async ()=>{
     hoardMat.needsUpdate = true;
     batMat.map = batTexture(sp.bat || SPONSOR_FALLBACK.bat);
     batMat.needsUpdate = true;
+    await loadViewmodel();
     if(!anyStepBad() && dbgMode === 'full') dbgMode = 'mini';   // startup is green; stop hiding the game
     paintDiag();
     startBenchmark();
