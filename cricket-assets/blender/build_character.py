@@ -217,44 +217,120 @@ def build_helmet(col, name='Helmet'):
     return helmet, grille
 
 
-def build_shoe(col, name='Shoe'):
-    """Spiked cricket shoe.
+def _shoe_profile(t):
+    """(half_width, topline_height) along the foot. t: 0 at toe, 1 at heel.
 
-    Authored running along +Z with cross-sections in the XY plane -- the only
-    orientation M.ring() is correct for -- then rotated to lie flat and the
-    rotation baked in. The first version lofted XY rings along Y and produced
-    a flat surfboard.
+    A shoe is not a wedge. Its width peaks at the ball of the foot and falls
+    away at both ends, while its topline climbs from a low toe box to an ankle
+    collar. Driving both from one monotonic ramp -- which is what the first
+    attempt did -- can only ever produce a chaise longue.
     """
-    LEN = 0.288
+    # width: narrow toe, widest at the ball (t~0.28), tapering to the heel
+    if t < 0.28:
+        w = 0.0255 + 0.0225 * (t / 0.28) ** 0.65
+    else:
+        w = 0.0480 - 0.0115 * ((t - 0.28) / 0.72) ** 1.25
+    # topline: low toe box, rising over the instep into the collar
+    if t < 0.36:
+        h = 0.0320 + 0.0180 * (t / 0.36) ** 1.5
+    elif t < 0.74:
+        h = 0.0500 + 0.0290 * ((t - 0.36) / 0.38) ** 1.3
+    else:
+        h = 0.0790 + 0.0250 * ((t - 0.74) / 0.26) ** 0.8
+    return w, h
+
+
+def build_shoe(col, name='Shoe'):
+    """Spiked cricket shoe, built as separate forms.
+
+    sole / upper / collar / tongue / laces / studs, rather than one swept
+    profile. Authored running along +Z with cross-sections in the XY plane --
+    the only orientation M.ring() is correct for -- then laid flat with the
+    rotation baked in, origins zeroed FIRST so every part rotates about the
+    same point.
+    """
+    LEN = 0.286
+    SOLE_T = 0.016
+    steps = 26
+
     sole_sections, upper_sections = [], []
-    steps = 20
     for k in range(steps + 1):
         t = k / steps
         z = t * LEN
-        # widest at the ball of the foot, tapering to heel and toe
-        girth = math.sin(math.pi * min(max(t * 1.12 - 0.04, 0.0), 1.0)) ** 0.55
-        w = 0.0225 + 0.0255 * girth
-        sole_sections.append(M.ring(0, 0, z, w, 0.0125, 16, rounded=0.62))
-        # Instep rises toward the ankle at the heel end. The upper sits ON
-        # the sole: centre it above the sole's half-thickness rather than on
-        # the centreline, or it dips 5 cm underneath and the whole thing reads
-        # as a boat hull.
-        h = 0.029 + 0.055 * max(0.0, (0.30 - t)) / 0.30
-        upper_sections.append(M.ring(0, 0.0125 + h * 0.5, z, w * 0.95,
-                                     h * 0.5, 16, rounded=0.80))
+        w, h = _shoe_profile(t)
+        # toe and heel round off in plan as well as section
+        # Round the toe and heel over a REAL span. At 0.05 the taper happened
+        # across the last 11 mm, which is not a curve -- the heel rendered as a
+        # flat drum with a circular back face.
+        cap = 1.0
+        if t < 0.13:
+            cap = math.sin(math.pi * 0.5 * (t / 0.13)) ** 0.45
+        elif t > 0.88:
+            cap = math.sin(math.pi * 0.5 * ((1.0 - t) / 0.12)) ** 0.45
+        sole_sections.append(M.ring(0, SOLE_T * 0.5, z, (w + 0.003) * cap,
+                                    SOLE_T * 0.5, 18, rounded=0.58))
+        upper_sections.append(M.ring(0, SOLE_T + (h - SOLE_T) * 0.5, z,
+                                     w * cap, (h - SOLE_T) * 0.5, 18,
+                                     rounded=0.82))
 
     sole = M.loft(f'{name}_sole', sole_sections, collection=col)
+    M.shade_smooth(sole, angle_deg=44)
+    M.smart_uv(sole)
+    mat.assign(sole, mat.strap())          # dark midsole reads as a real shoe
+
     upper = M.loft(f'{name}_upper', upper_sections, collection=col)
-    shoe = M.join([sole, upper], name)
-    M.shade_smooth(shoe, angle_deg=46)
-    M.smart_uv(shoe)
-    mat.assign(shoe, mat.pad_white())
+    M.shade_smooth(upper, angle_deg=44)
+    M.smart_uv(upper)
+    mat.assign(upper, mat.pad_white())
+
+    # ankle collar: a ring around the opening at the heel, so the shoe has a
+    # hole to put a foot in rather than being a solid lump
+    _, h_heel = _shoe_profile(0.985)
+    collar_pts, collar_r = [], []
+    for k in range(19):
+        a_ = 2.0 * math.pi * k / 18
+        collar_pts.append((0.030 * math.cos(a_),
+                           h_heel - 0.004 + 0.007 * math.sin(a_),
+                           LEN * 0.845 + 0.037 * math.sin(a_)))
+        collar_r.append(0.0075)
+    collar = M.tube_along_path(f'{name}_collar', collar_pts, collar_r, 8, col,
+                               caps=False)
+    M.shade_smooth(collar, angle_deg=50)
+    M.smart_uv(collar)
+    mat.assign(collar, mat.pad_white())
+
+    # tongue and laces over the instep
+    tongue_sections = []
+    for k in range(9):
+        t = 0.50 + 0.30 * (k / 8)
+        z = t * LEN
+        w, h = _shoe_profile(t)
+        tongue_sections.append(M.ring(0, h + 0.004, z, w * 0.52, 0.006, 10,
+                                      rounded=0.85))
+    tongue = M.loft(f'{name}_tongue', tongue_sections, collection=col)
+    M.shade_smooth(tongue, angle_deg=45)
+    M.smart_uv(tongue)
+    mat.assign(tongue, mat.pad_white())
+
+    laces = []
+    for i in range(4):
+        t = 0.545 + 0.062 * i
+        z = t * LEN
+        w, h = _shoe_profile(t)
+        pts = [(-w * 0.62, h + 0.002, z + 0.010),
+               (0.0, h + 0.009, z),
+               (w * 0.62, h + 0.002, z + 0.010)]
+        laces.append(M.tube_along_path(f'{name}_lace{i}', pts, 0.0032, 6, col))
+    lace_obj = M.join(laces, f'{name}_Laces')
+    M.shade_smooth(lace_obj, angle_deg=50)
+    M.smart_uv(lace_obj)
+    mat.assign(lace_obj, mat.strap())
 
     studs = []
-    for (sz, sx) in ((0.238, -0.026), (0.238, 0.026), (0.190, -0.030),
-                     (0.190, 0.030), (0.050, -0.024), (0.050, 0.024)):
-        st = M.cone(f'{name}_stud{sz}{sx}', r1=0.0062, r2=0.0040, depth=0.013,
-                    verts=8, location=(sx, -0.0165, sz), collection=col)
+    for (sz, sx) in ((0.235, -0.027), (0.235, 0.027), (0.185, -0.032),
+                     (0.185, 0.032), (0.052, -0.026), (0.052, 0.026)):
+        st = M.cone(f'{name}_stud{sz}{sx}', r1=0.0062, r2=0.0038, depth=0.013,
+                    verts=8, location=(sx, -0.0045, sz), collection=col)
         st.rotation_euler = (math.radians(90), 0, 0)
         M.apply_transform(st)
         studs.append(st)
@@ -263,30 +339,25 @@ def build_shoe(col, name='Shoe'):
     M.smart_uv(stud_obj)
     mat.assign(stud_obj, mat.steel_dark())
 
-    # Lay it down: +Z (length) -> +Y (forward), +Y (height) -> +Z (up).
-    #
-    # Origins are zeroed BEFORE rotating. M.join() leaves the joined object's
-    # origin at its first child's location, so the stud cluster's origin sat
-    # out at (-0.026, -0.0165, 0.238) while the shoe's was at zero -- rotating
-    # each about its own origin swung them to different places, and the studs
-    # ended up floating in the air beside the shoe. Two parts can only be
-    # rotated together if they share an origin.
-    for o in (shoe, stud_obj):
+    shoe = M.join([upper, collar, tongue], name)
+    dark = M.join([sole, lace_obj], f'{name}_Dark')
+
+    for o in (shoe, dark, stud_obj):
         M.set_origin(o, (0, 0, 0))
         o.rotation_euler = (math.radians(90), 0, math.radians(180))
         M.apply_transform(o)
-    return shoe, stud_obj
+    return shoe, dark, stud_obj
 
 
 def build(col=None):
     col = col or M.new_collection('Character')
     pad, pad_straps = build_pad(col)
     helmet, grille = build_helmet(col)
-    shoe, studs = build_shoe(col)
+    shoe, shoe_dark, studs = build_shoe(col)
     return col, {
         'Pad': pad, 'Pad_Straps': pad_straps,
         'Helmet': helmet, 'Helmet_Grille': grille,
-        'Shoe': shoe, 'Shoe_Studs': studs,
+        'Shoe': shoe, 'Shoe_Dark': shoe_dark, 'Shoe_Studs': studs,
     }
 
 
