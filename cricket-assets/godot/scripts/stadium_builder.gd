@@ -32,6 +32,9 @@ const HOARDING_R := BOUNDARY_R + 2.6
 const FIELD_R := 78.0
 const CROWN := 0.45
 const TREE_R := 112.0
+const FLOODLIGHT_R := 110.0
+const N_FLOODLIGHTS := 6
+const SIGHTSCREEN_X := 75.0
 const N_BRANDS := 6
 
 @export var stand_glb: PackedScene
@@ -44,6 +47,11 @@ const N_BRANDS := 6
 @export var seat_glb: PackedScene
 @export var crowd_glb: PackedScene
 @export var tree_glb: PackedScene
+## Tower and lamp array are separate meshes sharing one transform: the lamps
+## are emissive and the tower is not, so they cannot be one material.
+@export var floodlight_tower_glb: PackedScene
+@export var floodlight_lamps_glb: PackedScene
+@export var sightscreen_glb: PackedScene
 ## Six hoarding variants; the builder cycles them round the boundary.
 @export var hoarding_glbs: Array[PackedScene] = []
 @export var crowd_material: ShaderMaterial
@@ -53,6 +61,25 @@ const N_BRANDS := 6
 @export var concrete_material: ShaderMaterial
 @export var precast_material: ShaderMaterial
 @export var fill_ratio := 0.94  ## fraction of seats that are occupied
+
+
+static func ring_transform(radius: float, height: float, a: float,
+		yaw_offset := PI * 0.5) -> Transform3D:
+	## Place a module on the bowl ring at angle `a`, facing the middle.
+	##
+	## The -sin is the whole point. glTF's Y-up conversion maps Blender
+	## (x, y, z) to (x, z, -y), so a Blender ring position at angle `a` lands
+	## at -sin here, while a Blender rotation of `a` about +Z comes through
+	## unchanged as Basis(UP, a). Write the position with +sin and the ring is
+	## mirrored against the rotations: the two cancel at the ends of the pitch
+	## and nowhere else, so the seats behind the bowler look right and the ones
+	## at square leg face the car park.
+	##
+	## Kept as a static function so it can be tested without a RenderingServer
+	## -- MultiMesh.get_instance_transform() reads back identity under
+	## --headless, which makes verifying the built bowl in place impossible.
+	return Transform3D(Basis(Vector3.UP, a + yaw_offset),
+			Vector3(radius * cos(a), height, -radius * sin(a)))
 
 
 func ground_height(x: float, z: float) -> float:
@@ -67,6 +94,8 @@ func _ready() -> void:
 	_build_seats()
 	_build_crowd()
 	_build_hoardings()
+	_build_floodlights()
+	_build_sightscreens()
 	_build_trees()
 
 
@@ -154,8 +183,7 @@ func _build_seats() -> void:
 		var count := int(TAU * rh.x / 0.52)
 		for i in count:
 			var a := TAU * float(i) / float(count)
-			var pos := Vector3(rh.x * cos(a), rh.y, rh.x * sin(a))
-			xforms.append(Transform3D(Basis(Vector3.UP, a + PI * 0.5), pos))
+			xforms.append(ring_transform(rh.x, rh.y, a))
 	_make_multimesh("Seats", seat_glb, xforms)
 
 
@@ -173,7 +201,7 @@ func _build_crowd() -> void:
 				continue
 			var a := TAU * float(i) / float(count)
 			var r_in := rh.x - 0.16
-			var pos := Vector3(r_in * cos(a), rh.y + 0.28, r_in * sin(a))
+			var pos := ring_transform(r_in, rh.y + 0.28, a).origin
 			# billboarding is done in the shader; basis only carries scale
 			var scale_v := 0.94 + rng.randf() * 0.16
 			xforms.append(Transform3D(Basis().scaled(Vector3.ONE * scale_v), pos))
@@ -192,14 +220,37 @@ func _build_hoardings() -> void:
 		buckets.append([] as Array[Transform3D])
 	for i in n:
 		var a := TAU * float(i) / float(n)
-		var x := HOARDING_R * cos(a)
-		var z := HOARDING_R * sin(a)
-		var pos := Vector3(x, ground_height(x, z), z)
-		buckets[i % hoarding_glbs.size()].append(
-				Transform3D(Basis(Vector3.UP, a + PI * 0.5), pos))
+		var flat := ring_transform(HOARDING_R, 0.0, a)
+		var xf := Transform3D(flat.basis, flat.origin
+				+ Vector3.UP * ground_height(flat.origin.x, flat.origin.z))
+		buckets[i % hoarding_glbs.size()].append(xf)
 	for b in hoarding_glbs.size():
 		_make_multimesh("Hoardings_%d" % b, hoarding_glbs[b],
 				buckets[b] as Array[Transform3D])
+
+
+func _build_floodlights() -> void:
+	## Six pylons rather than the usual four, offset 15 degrees so one falls
+	## inside the batsman's view instead of all of them sitting just outside
+	## it on the diagonals.
+	var xforms: Array[Transform3D] = []
+	for k in N_FLOODLIGHTS:
+		var a := deg_to_rad(15.0 + float(k) * 60.0)
+		xforms.append(ring_transform(FLOODLIGHT_R, 0.0, a))
+	_make_multimesh("FloodlightTowers", floodlight_tower_glb, xforms)
+	# Same transform for both: the lamp array is modelled in the head's frame.
+	# Its emissive faces sit on the head's local axis, so this yaw is what
+	# aims them at the middle of the ground -- get it wrong and every pylon
+	# renders as a black silhouette lighting the car park.
+	_make_multimesh("FloodlightLamps", floodlight_lamps_glb, xforms)
+
+
+func _build_sightscreens() -> void:
+	var xforms: Array[Transform3D] = []
+	for sign_ in [1.0, -1.0]:
+		xforms.append(Transform3D(Basis(Vector3.UP, PI * 0.5),
+				Vector3(sign_ * SIGHTSCREEN_X, 0.0, 0.0)))
+	_make_multimesh("Sightscreens", sightscreen_glb, xforms)
 
 
 func _build_trees() -> void:
@@ -211,7 +262,7 @@ func _build_trees() -> void:
 	for i in 46:
 		var a := TAU * float(i) / 46.0 + rng.randf() * 0.06  # noqa
 		var r := TREE_R + rng.randf() * 9.0
-		var pos := Vector3(r * cos(a), 0.0, r * sin(a))
+		var pos := ring_transform(r, 0.0, a).origin
 		var sc := 0.8 + rng.randf() * 0.7
 		var basis := Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3.ONE * sc)
 		xforms.append(Transform3D(basis, pos))

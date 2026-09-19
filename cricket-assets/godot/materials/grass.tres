@@ -4,8 +4,8 @@
 
 [resource]
 shader = ExtResource("1_shader")
-shader_parameter/colour_light = Color(0.25, 0.58, 0.12, 1)
-shader_parameter/colour_dark = Color(0.203, 0.497, 0.104, 1)
+shader_parameter/colour_light = Color(0.05088, 0.2957, 0.01341, 1.0)
+shader_parameter/colour_dark = Color(0.03405, 0.21127, 0.01065, 1.0)
 shader_parameter/stripe_width_m = 4.0
 shader_parameter/stripe_angle_deg = 0.0
 shader_parameter/roughness_toward = 0.48

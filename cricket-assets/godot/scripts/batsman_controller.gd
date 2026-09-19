@@ -17,6 +17,11 @@ extends CharacterBody3D
 @export var root_bone := "root"
 ## Runtime IK so the feet meet the crowned outfield, not a flat plane.
 @export var foot_ik := true
+## Render layer for the third-person body. The POV camera stands inside this
+## model -- eye height, same spot -- so without a layer to cull it, the first
+## thing the batsman sees is the inside of his own shoulders. batsman_pov.gd
+## drops this layer from its cull mask; every other camera keeps it.
+@export var body_layer := 2
 
 var _tree: AnimationTree
 var _player: AnimationPlayer
@@ -34,6 +39,8 @@ func _ready() -> void:
 	var swapper := preload("res://scripts/apply_materials.gd").new()
 	swapper.apply_to(_model)
 	swapper.free()
+
+	_set_render_layer(_model, 1 << (body_layer - 1))
 
 	_player = _find(_model, "AnimationPlayer") as AnimationPlayer
 	if _player == null:
@@ -138,6 +145,16 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y = 0.0
 	move_and_slide()
+
+
+static func _set_render_layer(root: Node, mask: int) -> void:
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is VisualInstance3D:
+			(n as VisualInstance3D).layers = mask
+		for c in n.get_children():
+			stack.append(c)
 
 
 static func _find(root: Node, cls: String) -> Node:

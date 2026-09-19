@@ -1,4 +1,4 @@
-[gd_scene load_steps=32 format=3]
+[gd_scene load_steps=35 format=3]
 
 [ext_resource type="Script" path="res://scripts/match_scene.gd" id="1_match"]
 [ext_resource type="Script" path="res://scripts/stadium_builder.gd" id="2_stadium"]
@@ -23,13 +23,16 @@
 [ext_resource type="PackedScene" path="res://assets/hoarding_03.glb" id="21_h3"]
 [ext_resource type="PackedScene" path="res://assets/hoarding_04.glb" id="22_h4"]
 [ext_resource type="PackedScene" path="res://assets/hoarding_05.glb" id="23_h5"]
+[ext_resource type="PackedScene" path="res://assets/floodlight_tower.glb" id="28_fltower"]
+[ext_resource type="PackedScene" path="res://assets/floodlight_lamps.glb" id="29_fllamps"]
+[ext_resource type="PackedScene" path="res://assets/sightscreen.glb" id="30_sight"]
 [ext_resource type="Material" path="res://materials/crowd.tres" id="24_crowdmat"]
 [ext_resource type="Material" path="res://materials/concrete.tres" id="25_concrete"]
 [ext_resource type="Material" path="res://materials/precast.tres" id="26_precast"]
 [ext_resource type="Script" path="res://scripts/batsman_controller.gd" id="27_ctrl"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMat_1"]
-sky_top_color = Color(0.2, 0.404, 0.776, 1)
+sky_top_color = Color(0.32, 0.52, 0.86, 1)
 sky_horizon_color = Color(0.725, 0.812, 0.902, 1)
 sky_curve = 0.13
 ground_bottom_color = Color(0.11, 0.247, 0.09, 1)
@@ -66,7 +69,7 @@ glow_hdr_threshold = 1.0
 adjustment_enabled = true
 adjustment_brightness = 1.0
 adjustment_contrast = 1.05
-adjustment_saturation = 1.15
+adjustment_saturation = 1.06
 
 [sub_resource type="CapsuleShape3D" id="Capsule_1"]
 radius = 0.25
@@ -91,7 +94,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 30, 0)
 rotation_order = 2
 rotation_degrees = Vector3(-41, -142, 0)
 light_color = Color(1, 0.952, 0.862, 1)
-light_energy = 1.6
+light_energy = 0.95
 light_angular_distance = 2.5
 shadow_enabled = true
 shadow_bias = 0.03
@@ -107,7 +110,7 @@ directional_shadow_max_distance = 220.0
 rotation_order = 2
 rotation_degrees = Vector3(90, 0, 0)
 light_color = Color(0.35, 0.55, 0.2, 1)
-light_energy = 0.3
+light_energy = 0.18
 light_specular = 0.0
 shadow_enabled = false
 
@@ -115,7 +118,7 @@ shadow_enabled = false
 rotation_order = 2
 rotation_degrees = Vector3(-58, 38, 0)
 light_color = Color(0.78, 0.845, 1, 1)
-light_energy = 2.1
+light_energy = 0.46
 light_specular = 0.0
 shadow_enabled = false
 
@@ -137,6 +140,9 @@ roofsign_glb = ExtResource("14_roofsign")
 seat_glb = ExtResource("15_seat")
 crowd_glb = ExtResource("16_crowd")
 tree_glb = ExtResource("17_tree")
+floodlight_tower_glb = ExtResource("28_fltower")
+floodlight_lamps_glb = ExtResource("29_fllamps")
+sightscreen_glb = ExtResource("30_sight")
 hoarding_glbs = [ExtResource("18_h0"), ExtResource("19_h1"), ExtResource("20_h2"), ExtResource("21_h3"), ExtResource("22_h4"), ExtResource("23_h5")]
 crowd_material = ExtResource("24_crowdmat")
 concrete_material = ExtResource("25_concrete")

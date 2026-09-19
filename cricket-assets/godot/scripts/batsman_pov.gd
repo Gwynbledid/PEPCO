@@ -20,6 +20,10 @@ const VM_YAW_DEG := 14.0
 @export var look_sensitivity := 0.0025
 @export var max_pitch_deg := 35.0
 @export var min_pitch_deg := -30.0
+## Layer the third-person batsman renders on. The camera sits inside that
+## model, so it has to be culled here or the view is filled with the inside of
+## his own head. The hands and bat you DO see are the separate viewmodel.
+@export var body_layer := 2
 
 var _viewmodel_rig: Node3D
 var _yaw := 0.0
@@ -33,6 +37,8 @@ func ground_height(x: float, z: float) -> float:
 
 
 func _ready() -> void:
+	cull_mask &= ~(1 << (body_layer - 1))
+
 	# 26 mm full-frame ~= 69 deg horizontal. Godot's `fov` is VERTICAL, so a
 	# 16:9 viewport needs ~46 deg to match. Setting 69 here is the classic
 	# mistake and gives a noticeably fish-eyed pitch.
@@ -55,12 +61,22 @@ func _attach_viewmodel() -> void:
 	_viewmodel_rig.name = "ViewmodelRig"
 	add_child(_viewmodel_rig)
 	_viewmodel_rig.position = VM_OFFSET
-	# Same basis change as build_viewmodel.attach_to_camera(): the asset is
-	# authored Z-up, the camera looks down -Z.
-	_viewmodel_rig.rotation = Vector3(
-		deg_to_rad(90.0 + VM_TILT_DEG),
-		deg_to_rad(VM_ROLL_DEG),
-		deg_to_rad(180.0 + VM_YAW_DEG))
+	# Same basis change as build_viewmodel.attach_to_camera(), with two
+	# corrections that a straight copy of the Blender angles does not survive.
+	#
+	# 1. Blender composes an XYZ euler as Rz * Ry * Rx; Godot's default euler
+	#    order is YXZ. Assigning `rotation` with the Blender numbers silently
+	#    gives a different orientation, so the basis is composed explicitly.
+	# 2. Blender authors the viewmodel Z-up, and the glTF exporter has already
+	#    rotated it -90 degrees about X to make it Y-up. That conversion has to
+	#    be undone here before the stance rotation, which is the extra 90
+	#    degrees folded into the tilt term below. Without it the bat stands
+	#    straight up through the middle of the screen instead of resting across
+	#    the bottom right of the view.
+	_viewmodel_rig.basis = (
+		Basis(Vector3(0, 0, 1), deg_to_rad(180.0 + VM_YAW_DEG))
+		* Basis(Vector3(0, 1, 0), deg_to_rad(VM_ROLL_DEG))
+		* Basis(Vector3(1, 0, 0), deg_to_rad(180.0 + VM_TILT_DEG)))
 	var vm := viewmodel_glb.instantiate()
 	_viewmodel_rig.add_child(vm)
 	# the viewmodel is the closest thing to camera in the whole game; it needs

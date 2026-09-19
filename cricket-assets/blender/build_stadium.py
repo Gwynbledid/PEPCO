@@ -322,13 +322,18 @@ def build_seat(col):
 CROWD_W, CROWD_H = 0.78, 1.15
 
 
-def build_crowd_card(col, cell=0, cols=8, rows=4, name=None):
+def build_crowd_card(col, cell=0, cols=8, rows=4, name=None, unit_uv=False):
     """One spectator quad, UV-mapped to a single cell of the crowd atlas.
 
     Blender has no per-instance atlas index without geometry nodes, so the
-    preview builds all 16 variants as separate objects and scatters them.
-    Godot does NOT need this: crowd_card.gdshader picks the cell per instance
-    from INSTANCE_ID, so only cell 0 is exported.
+    preview builds all 32 variants as separate objects and scatters them.
+
+    The EXPORTED card must not do that. crowd_card.gdshader picks the cell per
+    instance and computes `(UV + cell_offset) * cell_size` itself, so it needs
+    UVs spanning the full 0..1. Ship it cell-0 UVs instead and the shader
+    scales an already-scaled coordinate into the corner of one cell, which is
+    transparent, so every spectator is alpha-discarded and the stand renders as
+    28,000 empty blue seats. Hence `unit_uv` for the export copy.
     """
     obj = M.plane(name or f'CrowdCard_{cell:02d}', size_x=CROWD_W,
                   size_y=CROWD_H, collection=col)
@@ -339,9 +344,13 @@ def build_crowd_card(col, cell=0, cols=8, rows=4, name=None):
     cx, cy = cell % cols, cell // cols
     for loop in obj.data.loops:
         co = obj.data.vertices[loop.vertex_index].co
-        u = (co.x / CROWD_W + 0.5 + cx) / cols
-        # atlas rows run top-down; UV runs bottom-up
-        v = (co.z / CROWD_H + (rows - 1 - cy)) / rows
+        if unit_uv:
+            u = co.x / CROWD_W + 0.5
+            v = co.z / CROWD_H
+        else:
+            u = (co.x / CROWD_W + 0.5 + cx) / cols
+            # atlas rows run top-down; UV runs bottom-up
+            v = (co.z / CROWD_H + (rows - 1 - cy)) / rows
         uvl.data[loop.index].uv = (u, v)
     mat.assign(obj, mat.crowd_tex())
     return obj
@@ -456,7 +465,8 @@ def build_modules(col=None):
         'Box_Details':      box_details,
         'RoofSign_Module':  build_roof_signage(col),
         'Seat':             build_seat(col),
-        'CrowdCard':        build_crowd_card(col, cell=0, name='CrowdCard'),
+        'CrowdCard':        build_crowd_card(col, cell=0, name='CrowdCard',
+                                              unit_uv=True),
         'Sightscreen':      build_sightscreen(col),
         'Floodlight_Tower': tower,
         'Floodlight_Lamps': lamps,

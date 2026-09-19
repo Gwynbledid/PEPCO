@@ -93,13 +93,17 @@ def main():
     print('building lighting rig...')
     lighting_col, rig = build_lookdev.build()
 
-    # the viewmodel rides the POV camera
-    build_viewmodel.attach_to_camera(rig['pov'], vm_objs,
-                                     collection=lighting_col)
-
     if not args.no_export:
         print('\nexporting glTF:')
         export_selected(ground_objs, 'ground.glb')
+        # BEFORE attach_to_camera, deliberately. The engine applies its own
+        # camera-local offset and basis change (batsman_pov.gd mirrors
+        # attach_to_camera exactly), so the export has to carry the viewmodel
+        # in its AUTHORED frame. Exporting after the attach bakes this scene's
+        # POV camera world transform into every node, and the engine then
+        # stacks its offset on top and puts the bat 8 m across the square,
+        # behind the camera, where it is invisible and looks like a missing
+        # asset rather than a misplaced one.
         export_selected(vm_objs, 'viewmodel.glb')
         for key in ('Stand_Module', 'Roof_Module', 'Signage_Module',
                     'Box_Module', 'Box_Glass', 'Box_Details',
@@ -110,6 +114,11 @@ def main():
                     'Hoarding_03', 'Hoarding_04', 'Hoarding_05'):
             if key in modules:
                 export_selected([modules[key]], f'{key.lower()}.glb')
+
+    # Now the viewmodel can ride the POV camera -- for the preview renders
+    # only; the export above is the one the engine consumes.
+    build_viewmodel.attach_to_camera(rig['pov'], vm_objs,
+                                     collection=lighting_col)
 
     if not args.no_render:
         print('\nassembling bowl for preview...')

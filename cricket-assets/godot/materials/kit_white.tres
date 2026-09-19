@@ -4,7 +4,7 @@
 
 [resource]
 shader = ExtResource("1_shader")
-shader_parameter/base_colour = Color(0.88, 0.868, 0.838, 1)
+shader_parameter/base_colour = Color(0.74841, 0.72557, 0.67025, 1.0)
 shader_parameter/roughness_value = 0.8
 shader_parameter/metallic_value = 0.0
 shader_parameter/use_albedo_tex = false

@@ -55,6 +55,29 @@ func _initialize() -> void:
 		print("   %-12s %6d instances" % [k, mm[k]])
 		total += mm[k]
 	print("   TOTAL        %6d" % total)
+	# Ring placement handedness.
+	#
+	# Seats and hoardings are authored facing local +Y in Blender, which the
+	# glTF Y-up conversion turns into local -Z. If the ring positions and the
+	# yaw disagree in handedness the two cancel only at the ends of the pitch
+	# and everything else faces outward -- invisible from behind the stumps,
+	# glaring from square leg.
+	#
+	# This checks stadium_builder.ring_transform() rather than the built
+	# MultiMesh: under --headless the instance buffer lives in a dummy
+	# RenderingServer and get_instance_transform() reads back identity, so a
+	# check against the assembled bowl would pass no matter what was in it.
+	const Builder := preload("res://scripts/stadium_builder.gd")
+	var facing_worst := 1.0
+	for i in 72:
+		var a := TAU * float(i) / 72.0
+		var t: Transform3D = Builder.ring_transform(85.0, 3.0, a)
+		var face := (t.basis * Vector3(0, 0, -1)).normalized()
+		var inward := Vector3(-t.origin.x, 0.0, -t.origin.z).normalized()
+		facing_worst = min(facing_worst, face.dot(inward))
+	print("--- ring placement ---")
+	print("   worst facing dot over the ring (1.0 = dead at the middle): %.4f"
+			% facing_worst)
 	print("--- materials ---")
 	print("   ShaderMaterial surfaces: ", shader_surfaces)
 	print("   untouched glTF surfaces: ", std_surfaces)
@@ -67,6 +90,7 @@ func _initialize() -> void:
 	print("   camera children (viewmodel rig): ", cam_children)
 
 	var ok := total > 20000 and bones >= 20 and tree_active \
+		and facing_worst > 0.99 \
 		and root_track != "" and foot_ik > 0 and static_bodies > 0 \
 		and shader_surfaces > 0 and cam_children > 0
 	print("RESULT ", "PASSED" if ok else "FAILED")
