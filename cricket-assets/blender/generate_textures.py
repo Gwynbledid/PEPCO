@@ -16,8 +16,13 @@ import glob
 import math
 import os
 import random
+import sys
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib import noise as N
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    'textures')
@@ -162,9 +167,174 @@ def seat_block(path, size=512, seat=(28, 78, 150), gap=(20, 22, 26)):
     return path
 
 
+def concrete(path_albedo, path_rough, size=1024, seed=11):
+    """Board-formed stadium concrete, tileable.
+
+    Four things separate this from flat grey, in rough order of how much they
+    matter at stadium distance:
+      1. large blotchy tonal drift -- pour-to-pour colour variation
+      2. vertical run-off staining under every lip
+      3. horizontal form-board lines from the shuttering
+      4. fine aggregate grain
+    Only (4) is invisible past ~15 m, but it stops close-ups looking like
+    plastic, and it is nearly free.
+    """
+    rng = np.random.default_rng(seed)
+
+    blotch = N.fbm(size, 4, 5, rng)
+    medium = N.fbm(size, 14, 4, rng)
+    grain = N.fbm(size, 200, 2, rng)
+
+    value = (0.700
+             + (blotch - 0.5) * 0.17
+             + (medium - 0.5) * 0.085
+             + (grain - 0.5) * 0.05)
+
+    # form-board lines: shuttering leaves a seam every ~1.2 m
+    lines = np.zeros((size, size), dtype=np.float32)
+    spacing = size // 6
+    for k in range(6):
+        y = k * spacing
+        lines[:, max(0, y - 1):y + 2] += 0.10
+        lines[:, y + 2:y + 4] -= 0.035        # pale bleed under each seam
+    value -= lines
+
+    # run-off staining
+    value -= N.streaks(size, rng, count=110, strength=0.30) * 0.30
+
+    value = np.clip(value, 0.06, 1.0)
+
+    # concrete is not neutral: warm in the pale patches, cool in the damp ones
+    warm = (blotch - 0.5) * 0.045
+    # slight warm bias overall: raw cement photographs blue, but stadium
+    # concrete in sunlight does not
+    rgb = np.stack([value * 1.025 + warm * 1.2,
+                    value * 1.005 + warm * 0.25,
+                    value * 0.965 - warm * 0.9], axis=-1)
+    Image.fromarray(N.to_u8(np.clip(rgb, 0, 1)).transpose(1, 0, 2),
+                    mode='RGB').save(path_albedo)
+
+    # Roughness runs INVERSE to the staining: weathered, dirty concrete is
+    # rougher than the clean pours, and damp streaks are glossier.
+    rough = np.clip(0.88 - (blotch - 0.5) * 0.18
+                    - N.streaks(size, np.random.default_rng(seed + 1),
+                                count=110, strength=0.30) * 0.22, 0.30, 0.98)
+    Image.fromarray(N.to_u8(rough).T, mode='L').save(path_rough)
+    return path_albedo
+
+
+def crowd_atlas_v2(path, cell=256, cols=8, rows=4, seed=17):
+    """32 spectators, shaded.
+
+    The first atlas was flat vector shapes, which read as confetti once
+    thousands were instanced. Three changes fix that: a vertical light-to-dark
+    gradient down each torso so the figures have volume, edge darkening so they
+    separate from their neighbours, and real silhouette variety -- caps, raised
+    arms, folded arms, leaning, a few holding flags. Silhouette is what survives
+    at 80 m; the colours only stop it looking like a repeating pattern.
+    """
+    W, H = cell * cols, cell * rows
+    img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    rng = random.Random(seed)
+
+    for idx in range(cols * rows):
+        cx0, cy0 = (idx % cols) * cell, (idx // cols) * cell
+        tile = Image.new('RGBA', (cell, cell), (0, 0, 0, 0))
+        d = ImageDraw.Draw(tile)
+
+        shirt = SHIRTS[idx % len(SHIRTS)]
+        skin = SKINS[rng.randrange(len(SKINS))]
+        hair = HAIR[rng.randrange(len(HAIR))]
+        pose = rng.random()
+        lean = rng.uniform(-0.05, 0.05) * cell
+        height = rng.uniform(0.88, 1.06)
+
+        mx = cell // 2 + int(lean)
+        head_r = int(cell * 0.108 * height)
+        top_y = int(cell * (0.30 if pose < 0.30 else 0.24))
+        head_y = top_y + head_r
+        tw = int(cell * rng.uniform(0.38, 0.47) * height)
+        ty0 = head_y + int(head_r * 0.85)
+        ty1 = int(cell * 0.95)
+
+        if pose < 0.30:                      # arms raised
+            aw = int(cell * 0.085)
+            for sgn in (-1, 1):
+                ax = mx + sgn * int(tw * 0.55)
+                d.rounded_rectangle([ax - aw // 2, int(cell * 0.10),
+                                     ax + aw // 2, ty0 + int(cell * 0.18)],
+                                    radius=aw // 2, fill=shirt + (255,))
+                d.ellipse([ax - aw // 2, int(cell * 0.06),
+                           ax + aw // 2, int(cell * 0.06) + aw],
+                          fill=skin + (255,))
+        elif pose < 0.45:                    # holding a small flag
+            fx = mx + int(tw * 0.62)
+            d.line([(fx, int(cell * 0.08)), (fx, ty0 + int(cell * 0.20))],
+                   fill=(70, 60, 55, 255), width=max(2, cell // 90))
+            fc = SHIRTS[(idx * 5 + 3) % len(SHIRTS)]
+            d.polygon([(fx, int(cell * 0.09)), (fx + int(cell * 0.20), int(cell * 0.15)),
+                       (fx, int(cell * 0.22))], fill=fc + (255,))
+
+        d.rounded_rectangle([mx - tw // 2, ty0, mx + tw // 2, ty1],
+                            radius=int(cell * 0.11), fill=shirt + (255,))
+        d.ellipse([mx - head_r, head_y - head_r, mx + head_r, head_y + head_r],
+                  fill=skin + (255,))
+        if rng.random() < 0.34:              # cap
+            cc = SHIRTS[(idx * 3 + 7) % len(SHIRTS)]
+            d.pieslice([mx - head_r, head_y - head_r,
+                        mx + head_r, head_y + head_r],
+                       start=180, end=360, fill=cc + (255,))
+            d.rectangle([mx - head_r, head_y - int(head_r * 0.12),
+                         mx + int(head_r * 1.5), head_y + int(head_r * 0.10)],
+                        fill=cc + (255,))
+        else:
+            d.pieslice([mx - head_r, head_y - head_r,
+                        mx + head_r, head_y + head_r],
+                       start=180, end=360, fill=hair + (255,))
+
+        # vertical shading gradient: light at the shoulders, dark at the lap
+        arr = np.array(tile).astype(np.float32)
+        ramp = np.linspace(1.16, 0.60, cell, dtype=np.float32)[:, None]
+        arr[..., :3] *= ramp
+        # edge darkening so neighbours separate in a packed stand
+        alpha = arr[..., 3] / 255.0
+        from PIL import ImageFilter as _IF
+        blurred = np.array(Image.fromarray(
+            (alpha * 255).astype(np.uint8)).filter(
+                _IF.GaussianBlur(cell / 42.0))).astype(np.float32) / 255.0
+        arr[..., :3] *= (0.55 + 0.45 * blurred)[..., None]
+        tile = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+
+        img.paste(tile, (cx0, cy0), tile)
+
+    img = img.filter(ImageFilter.GaussianBlur(radius=cell / 700.0))
+    img.save(path)
+    return path
+
+
+def seat_texture(path, size=256, base=(28, 78, 150), seed=23):
+    """A single moulded seat: vertical rib shadows, a top highlight and a
+    little grime in the seat pan."""
+    rng = np.random.default_rng(seed)
+    grain = N.fbm(size, 40, 3, rng)
+    ribs = 0.5 + 0.5 * np.cos(np.linspace(0, math.pi * 14, size))[:, None]
+    shade = (0.86 + 0.16 * ribs + (grain[..., None][:, :, 0] - 0.5) * 0.10)
+    vert = np.linspace(1.12, 0.78, size, dtype=np.float32)[None, :]
+    shade = shade * vert
+    rgb = np.stack([np.clip(shade * base[0] / 255.0, 0, 1),
+                    np.clip(shade * base[1] / 255.0, 0, 1),
+                    np.clip(shade * base[2] / 255.0, 0, 1)], axis=-1)
+    Image.fromarray(N.to_u8(rgb).transpose(1, 0, 2), 'RGB').save(path)
+    return path
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
-    made = [crowd_atlas(os.path.join(OUT, 'crowd_atlas.png'))]
+    made = [crowd_atlas_v2(os.path.join(OUT, 'crowd_atlas.png'))]
+    made.append(concrete(os.path.join(OUT, 'concrete_albedo.png'),
+                         os.path.join(OUT, 'concrete_rough.png')))
+    made.append(os.path.join(OUT, 'concrete_rough.png'))
+    made.append(seat_texture(os.path.join(OUT, 'seat.png')))
     for i, (b, t, bg, fg) in enumerate(BRANDS):
         made.append(hoarding(os.path.join(OUT, f'hoarding_{i:02d}.png'),
                              b, t, bg, fg))

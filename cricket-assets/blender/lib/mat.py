@@ -232,6 +232,76 @@ def textured(name, filename, roughness=0.6, alpha_clip=False,
     return mat
 
 
+def concrete_tex(name='M_ConcreteTex', tint=(1.0, 1.0, 1.0), scale=0.25):
+    """Weathered concrete, BOX-PROJECTED from object coordinates.
+
+    The stand is built from swept quad strips whose UVs run 0..1 per segment,
+    so a UV-mapped texture would stretch differently on every face. Box
+    projection ignores the UVs entirely and projects along the dominant axis
+    of each face, which gives an even real-world texel density across
+    terracing, risers and walls alike -- and needs no unwrapping at all.
+
+    `scale` is in object units: 0.25 tiles the map every 4 m.
+    """
+    mat = bpy.data.materials.get(name)
+    if mat:
+        return mat
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes['Principled BSDF']
+
+    albedo = _image('concrete_albedo.png')
+    rough = _image('concrete_rough.png')
+    if albedo is None:
+        bsdf.inputs['Base Color'].default_value = (*_srgb(CONCRETE), 1.0)
+        bsdf.inputs['Roughness'].default_value = R_CONCRETE
+        return mat
+
+    texco = nt.nodes.new('ShaderNodeTexCoord')
+    mapping = nt.nodes.new('ShaderNodeMapping')
+    mapping.inputs['Scale'].default_value = (scale, scale, scale)
+    nt.links.new(texco.outputs['Object'], mapping.inputs['Vector'])
+
+    tex = nt.nodes.new('ShaderNodeTexImage')
+    tex.image = albedo
+    tex.projection = 'BOX'
+    tex.projection_blend = 0.30
+    nt.links.new(mapping.outputs['Vector'], tex.inputs['Vector'])
+
+    if tint != (1.0, 1.0, 1.0):
+        mix = nt.nodes.new('ShaderNodeMix')
+        mix.data_type = 'RGBA'
+        mix.blend_type = 'MULTIPLY'
+        mix.inputs['Factor'].default_value = 1.0
+        nt.links.new(tex.outputs['Color'], mix.inputs[6])
+        mix.inputs[7].default_value = (*tint, 1.0)
+        nt.links.new(mix.outputs[2], bsdf.inputs['Base Color'])
+    else:
+        nt.links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
+
+    if rough is not None:
+        rtex = nt.nodes.new('ShaderNodeTexImage')
+        rtex.image = rough
+        rtex.image.colorspace_settings.name = 'Non-Color'   # data, not colour
+        rtex.projection = 'BOX'
+        rtex.projection_blend = 0.30
+        nt.links.new(mapping.outputs['Vector'], rtex.inputs['Vector'])
+        nt.links.new(rtex.outputs['Color'], bsdf.inputs['Roughness'])
+    else:
+        bsdf.inputs['Roughness'].default_value = R_CONCRETE
+    return mat
+
+
+def precast_tex():
+    """Paler precast, for the box-balcony frames and piers."""
+    return concrete_tex('M_PrecastTex', tint=(1.18, 1.17, 1.14), scale=0.55)
+
+
+def seat_tex():
+    return textured('M_SeatTex', 'seat.png', roughness=R_PLASTIC)
+
+
 def crowd_tex():
     return textured('M_CrowdTex', 'crowd_atlas.png', roughness=0.9,
                     alpha_clip=True)

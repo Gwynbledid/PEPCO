@@ -13,8 +13,10 @@ render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_lambert,
 	specular_disabled, shadows_disabled;
 
 uniform sampler2D crowd_atlas : source_color, filter_linear_mipmap;
-uniform int atlas_cols : hint_range(1, 8) = 4;
-uniform int atlas_rows : hint_range(1, 8) = 4;
+// Atlas is 8x4 = 32 spectators. Keep in step with
+// build_stadium.build_crowd_card()'s cols/rows or the cells will not line up.
+uniform int atlas_cols : hint_range(1, 16) = 8;
+uniform int atlas_rows : hint_range(1, 16) = 4;
 uniform float alpha_cut : hint_range(0.0, 1.0) = 0.5;
 
 group_uniforms Motion;

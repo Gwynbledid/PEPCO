@@ -133,7 +133,7 @@ def build_stand_module(col):
 
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     obj = M.mesh_from_bmesh(bm, 'Stand_Module', col)
-    mat.assign(obj, mat.concrete())
+    mat.assign(obj, mat.concrete_tex())
     M.shade_smooth(obj, angle_deg=20)
     return obj
 
@@ -214,7 +214,7 @@ def build_box_module(col):
            _arc(BOX_R, BOX_Z0 + BOX_H * 0.88, half))
     bmesh.ops.recalc_face_normals(body_bm, faces=body_bm.faces[:])
     body = M.mesh_from_bmesh(body_bm, 'Box_Body', col)
-    mat.assign(body, mat.box_frame())
+    mat.assign(body, mat.precast_tex())
 
     # piers: short vertical slabs standing proud of the glass line
     piers = []
@@ -230,7 +230,7 @@ def build_box_module(col):
     M.apply_all_modifiers(pier_obj)
     M.shade_smooth(pier_obj, angle_deg=30)
     M.smart_uv(pier_obj)
-    mat.assign(pier_obj, mat.box_frame())
+    mat.assign(pier_obj, mat.precast_tex())
 
     merged = M.join([body, pier_obj], 'Box_Module')
     return merged, glass
@@ -275,14 +275,14 @@ def build_seat(col):
     obj = M.join([pan, back], 'Seat')
     M.shade_smooth(obj, angle_deg=40)
     M.smart_uv(obj)
-    mat.assign(obj, mat.seat())
+    mat.assign(obj, mat.seat_tex())
     return obj
 
 
 CROWD_W, CROWD_H = 0.78, 1.15
 
 
-def build_crowd_card(col, cell=0, cols=4, rows=4, name=None):
+def build_crowd_card(col, cell=0, cols=8, rows=4, name=None):
     """One spectator quad, UV-mapped to a single cell of the crowd atlas.
 
     Blender has no per-instance atlas index without geometry nodes, so the
@@ -424,7 +424,7 @@ def build_modules(col=None):
     for i in range(N_BRANDS):
         mods[f'Hoarding_{i:02d}'] = build_hoarding_panel(col, i)
     # the 16 atlas variants used only by the Blender preview
-    mods['_crowd_cells'] = [build_crowd_card(col, cell=c) for c in range(16)]
+    mods['_crowd_cells'] = [build_crowd_card(col, cell=c) for c in range(32)]
 
     # NORMALISE EVERY MODULE ORIGIN TO (0,0,0).
     #

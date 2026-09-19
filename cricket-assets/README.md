@@ -33,7 +33,8 @@ blender/
   build_stadium.py      stand module, seat, crowd card, hoarding, sightscreen, floodlight
   build_viewmodel.py    bat, gloves, forearms, helmet grille (first person)
   build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
-  generate_textures.py  crowd atlas, hoardings, signage (Pillow, no painting)
+  generate_textures.py  concrete, crowd atlas, seats, hoardings, signage
+  lib/noise.py          tileable value noise / fBm / dirt streaks
   render_sheet.py       each asset alone under the real rig
   build_all.py          builds everything, exports glTF, renders previews
 godot/
@@ -122,6 +123,46 @@ not provide, and it fails silently. Inside the Blender GUI it works. Bloom is
 Godot's job anyway; `lookdev.tscn` sets the equivalent glow.
 
 ---
+
+## Texturing
+
+All maps are generated, never painted — `generate_textures.py` plus
+`lib/noise.py`. Re-run and you get the same output, so nothing is precious.
+
+**Everything tiles by construction.** `lib/noise.py` builds value noise from a
+lattice indexed with modulo arithmetic, so every octave wraps in both axes.
+A stadium tiles one concrete map across thousands of square metres and a
+visible seam is the first thing the eye finds; fixing seams afterwards is much
+harder than never making them.
+
+### Concrete is triplanar, not UV-mapped
+
+The stand is swept quad strips whose UVs run 0..1 *per segment*. A UV-mapped
+texture therefore stretches differently on every face — risers, treads and
+walls would each get a different texel density. Both renderers project instead:
+Blender uses the Image Texture node's `BOX` projection from object
+coordinates, Godot uses `shaders/concrete.gdshader`, which blends three
+world-space projections weighted by the surface normal. Neither needs an
+unwrap. **Keep the scales in step** (0.25 = 4 m tiles) or the previews and the
+game will disagree.
+
+What the concrete map actually carries, in order of how far it reads:
+large blotchy tonal drift (pour-to-pour colour variation), vertical run-off
+staining under every lip, horizontal form-board lines from the shuttering, and
+fine aggregate grain. Only the grain is invisible past ~15 m, but it stops
+close-ups looking like plastic and costs nothing. Roughness runs *inverse* to
+the staining — weathered concrete is rougher than clean pours, and damp
+streaks are glossier.
+
+### The crowd needs silhouette, not colour
+
+The first atlas was flat vector shapes and read as confetti once thousands
+were instanced. The rebuild is 32 cells with three changes that matter: a
+vertical light-to-dark gradient down each torso so figures have volume, edge
+darkening so neighbours separate in a packed stand, and real silhouette
+variety — caps, raised arms, flags, leaning, varied heights. Silhouette is
+what survives at 80 m. Colour only stops it looking like a repeating pattern,
+which is why per-instance tint dropped to 0.18 once the atlas carried its own.
 
 ## Colour space
 
@@ -340,8 +381,8 @@ rather than broken:
 - **The stand module is hard to read in isolation** — the roof slab dominates
   and the terracing behind it is barely visible. Fine at stadium distance,
   but it is the piece most worth revisiting if you ever show the stands close.
-- No textures anywhere. Materials are flat colour + roughness; UVs are
-  unwrapped and ready for painting.
+- Kit, pads and gloves are still flat colour + roughness. Concrete, seats and
+  the crowd are textured; the player-facing assets are not.
 - No character rig. Bowler and fielders are not built — in POV they are distant
   and low-poly, so they are the next job, not the first.
 - **`Cam_Hero` is framed too low** — `renders/hero.png` is mostly ground with no
