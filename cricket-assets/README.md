@@ -182,7 +182,7 @@ stadium rather than two rings of terracing. Same for the roofline: a
 continuous ring of boards looks like a wall, so they go on two segments in
 every three.
 
-### Four mistakes worth not repeating
+### Five mistakes worth not repeating
 
 **The canopy made the stands read as a black void.** A tall back wall plus a
 deep soffit put a solid dark band across every stand. Real roofs read as a
@@ -211,12 +211,26 @@ and flipping U during construction changed nothing because the reversal
 happened afterwards. Any text-bearing surface is now mapped from **world
 position** after the recalc, never from loop order.
 
+**Module origins silently discarded their authored offset.** `M.join()` gives
+the joined object the *first* child's location as its origin, and both the
+Blender assembler and the Godot builder place a module by assigning
+`.location` outright — which throws that offset away. The mesh keeps its shape
+and lands at the wrong height. It had buried the sightscreen 5.2 m into the
+ground, sunk the hoardings to half height, dropped seats 0.4 m and trees
+2.1 m, and left every floodlight's lamp array at pitch level, 63 m below its
+own frame. Nothing looked *broken*; things just looked wrong in ways easy to
+blame on the lighting — and I did blame the lighting first. `build_modules()`
+now normalises every module origin to (0,0,0), so a module's authored
+coordinates are its local coordinates and assigning `.location` is safe.
+**Audit `o.location` on anything you instance.**
+
 **Every floodlight rendered as a black silhouette.** The lamps sit on the
 head's local +Y, which after a Z-rotation of θ points along θ+90. Aiming them
 at the middle of the ground (direction a+180) needs a rotation of **a+90**,
-not a+180 — the intuitive value put the whole array 90° off, with its emissive
-faces pointing at the car park. Worth checking on anything whose front face
-matters: it renders perfectly, just facing the wrong way.
+not a+180 — the intuitive value put the whole array 90° off. Worth checking on
+anything whose front face matters: it renders perfectly, just facing the wrong
+way. (The *visible* black pylons turned out to be the origin bug above, not
+this — but both were real and both had to be fixed.)
 
 A fifth, less subtle one: the first reference render aimed the camera at the
 *shadowed* half of the bowl. With a key at azimuth 128°, the lit stands are on

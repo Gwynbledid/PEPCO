@@ -425,6 +425,27 @@ def build_modules(col=None):
         mods[f'Hoarding_{i:02d}'] = build_hoarding_panel(col, i)
     # the 16 atlas variants used only by the Blender preview
     mods['_crowd_cells'] = [build_crowd_card(col, cell=c) for c in range(16)]
+
+    # NORMALISE EVERY MODULE ORIGIN TO (0,0,0).
+    #
+    # M.join() gives the joined object the FIRST child's location as its
+    # origin. Both the Blender assembler and the Godot builder then place a
+    # module by assigning .location outright, which silently discards that
+    # authored offset -- the mesh keeps its shape but lands at the wrong
+    # height. It had buried the sightscreen 5.2 m into the ground, sunk the
+    # hoardings to half height, dropped seats 0.4 m and trees 2.1 m, and left
+    # every floodlight's lamp array sitting at pitch level 63 m below its own
+    # frame, which is what made the pylons look unlit.
+    #
+    # Baking the offset into the mesh makes a module's authored coordinates
+    # its local coordinates, so assigning .location is finally safe. Do this
+    # for anything that gets instanced.
+    for key, obj in mods.items():
+        if key.startswith('_'):
+            continue
+        M.set_origin(obj, (0.0, 0.0, 0.0))
+    for card in mods['_crowd_cells']:
+        M.set_origin(card, (0.0, 0.0, 0.0))
     return col, mods
 
 
