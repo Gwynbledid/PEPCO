@@ -335,7 +335,7 @@ def aim(obj, target):
     return obj
 
 
-def add_camera_reference(col, name='Cam_Reference', focal=35.0):
+def add_camera_reference(col, name='Cam_Reference', focal=32.0):
     """Framed like the reference photograph: low across the outfield, stands
     filling the middle band, sky above, grass in the foreground."""
     cam_data = bpy.data.cameras.new(name)
@@ -356,8 +356,12 @@ def add_camera_reference(col, name='Cam_Reference', focal=35.0):
     # horizon; a 50 mm lens aimed at the seating decks crops them off entirely
     # and the stadium loses its skyline. The reference gives roughly half the
     # frame to sky for exactly this reason.
+    # Aim is a balance, not a maximum: at 30 m the pylons were comfortably in
+    # frame but the outfield had shrunk to a sliver. 23 m keeps the heads
+    # inside the top edge (they sit ~25 deg up) while leaving real foreground
+    # grass, which is how the reference is composed.
     cam.location = (-4.0, 30.0, 2.35)
-    aim(cam, (0.0, -88.0, 30.0))
+    aim(cam, (0.0, -88.0, 23.0))
     return cam
 
 
