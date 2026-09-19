@@ -326,11 +326,55 @@ def seat_block_tex():
     return textured('M_SeatBlock', 'seat_block.png', roughness=0.42)
 
 
-def box_glass():
-    """Corporate-box glazing. Dark and glossy: from the middle of the ground
-    these read as a black band, which is exactly what separates a balcony
-    level from the seating decks above and below it."""
-    return _principled('M_BoxGlass', BOX_GLASS, 0.09, metallic=0.25)
+def box_glass(z_lo=10.5, z_hi=13.9):
+    """Corporate-box glazing with a faked sky reflection.
+
+    Flat near-black glass reads as a hole in the building -- the balcony looked
+    like a row of empty hollow boxes. Real glazing at this angle mirrors the
+    sky: pale and cool along the top of each pane, falling to dark where it
+    reflects the far stand and the ground. A vertical gradient in object space
+    gets that for nothing, and gives the band the sense of being a surface
+    rather than an absence.
+    """
+    name = 'M_BoxGlass'
+    m = bpy.data.materials.get(name)
+    if m:
+        return m
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    bsdf = nt.nodes['Principled BSDF']
+    bsdf.inputs['Roughness'].default_value = 0.06
+    bsdf.inputs['Metallic'].default_value = 0.55
+
+    texco = nt.nodes.new('ShaderNodeTexCoord')
+    sep = nt.nodes.new('ShaderNodeSeparateXYZ')
+    nt.links.new(texco.outputs['Object'], sep.inputs['Vector'])
+
+    height = nt.nodes.new('ShaderNodeMapRange')
+    height.inputs['From Min'].default_value = z_lo
+    height.inputs['From Max'].default_value = z_hi
+    height.clamp = True
+    nt.links.new(sep.outputs['Z'], height.inputs['Value'])
+
+    ramp = nt.nodes.new('ShaderNodeValToRGB')
+    ramp.color_ramp.interpolation = 'EASE'
+    ramp.color_ramp.elements[0].position = 0.10
+    ramp.color_ramp.elements[0].color = (*_srgb((0.030, 0.048, 0.070)), 1.0)
+    ramp.color_ramp.elements[1].position = 0.92
+    ramp.color_ramp.elements[1].color = (*_srgb((0.300, 0.430, 0.560)), 1.0)
+    nt.links.new(height.outputs['Result'], ramp.inputs['Fac'])
+    nt.links.new(ramp.outputs['Color'], bsdf.inputs['Base Color'])
+    return m
+
+
+def mullion():
+    """Dark anodised glazing bars."""
+    return _principled('M_Mullion', (0.115, 0.120, 0.128), 0.32, metallic=0.7)
+
+
+def handrail():
+    return _principled('M_Handrail', (0.690, 0.700, 0.715), 0.28, metallic=0.9)
 
 
 def box_frame():

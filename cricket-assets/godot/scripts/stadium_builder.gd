@@ -39,6 +39,7 @@ const N_BRANDS := 6
 @export var signage_glb: PackedScene
 @export var box_glb: PackedScene
 @export var box_glass_glb: PackedScene
+@export var box_details_glb: PackedScene  ## glazing bars, transom, rail
 @export var roofsign_glb: PackedScene
 @export var seat_glb: PackedScene
 @export var crowd_glb: PackedScene
@@ -130,6 +131,7 @@ func _build_stands() -> void:
 	_make_multimesh("Signage", signage_glb, xforms)
 	_make_multimesh("Boxes", box_glb, xforms)
 	_make_multimesh("BoxGlass", box_glass_glb, xforms)
+	_make_multimesh("BoxDetails", box_details_glb, xforms)
 
 	## Rooftop boards skip every third segment -- a continuous ring reads as a
 	## wall rather than a broken skyline.

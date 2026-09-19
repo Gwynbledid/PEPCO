@@ -191,32 +191,41 @@ def build_signage_module(col):
 def build_box_module(col):
     """The glazed corporate-box balcony between the two seating decks.
 
-    Built as a dark glass band broken by pale precast piers. Returned as TWO
-    objects because they need different materials, and a single mesh with two
-    slots would stop each being MultiMesh-instanced on its own in Godot.
+    Returns THREE objects, each needing its own material and each
+    MultiMesh-instanced separately in Godot:
+      body     precast parapet, soffit and piers
+      glass    the glazing, with a faked sky gradient
+      details  glazing bars, transom and capping rail
+
+    The details exist because a bare dark panel between two pale piers reads as
+    a hole in the building -- a row of hollow boxes rather than a balcony.
+    Subdividing the glass with bars gives it scale and tells the eye it is a
+    surface; the rail along the parapet gives the level somewhere for people to
+    stand. Both are cheap and both do more for the stand than any amount of
+    extra texture on the concrete.
     """
     half = SEG_ANGLE * 0.5
+    half_deg = math.degrees(half)
+    g_lo = BOX_Z0 + BOX_H * 0.20
+    g_hi = BOX_Z0 + BOX_H * 0.88
 
     glass_bm = bmesh.new()
     guv = glass_bm.loops.layers.uv.new('UVMap')
-    _strip(glass_bm, guv, _arc(BOX_R, BOX_Z0 + BOX_H * 0.88, half),
-           _arc(BOX_R, BOX_Z0 + BOX_H * 0.20, half))
+    _strip(glass_bm, guv, _arc(BOX_R, g_hi, half), _arc(BOX_R, g_lo, half))
     bmesh.ops.recalc_face_normals(glass_bm, faces=glass_bm.faces[:])
     glass = M.mesh_from_bmesh(glass_bm, 'Box_Glass', col)
-    mat.assign(glass, mat.box_glass())
+    mat.assign(glass, mat.box_glass(z_lo=g_lo, z_hi=g_hi))
 
     # solid parapet below the glazing, and the soffit above it
     body_bm = bmesh.new()
     buv = body_bm.loops.layers.uv.new('UVMap')
-    _strip(body_bm, buv, _arc(BOX_R, BOX_Z0 + BOX_H * 0.20, half),
-           _arc(BOX_R, BOX_Z0, half))
+    _strip(body_bm, buv, _arc(BOX_R, g_lo, half), _arc(BOX_R, BOX_Z0, half))
     _strip(body_bm, buv, _arc(BOX_R, BOX_Z0 + BOX_H, half),
-           _arc(BOX_R, BOX_Z0 + BOX_H * 0.88, half))
+           _arc(BOX_R, g_hi, half))
     bmesh.ops.recalc_face_normals(body_bm, faces=body_bm.faces[:])
     body = M.mesh_from_bmesh(body_bm, 'Box_Body', col)
     mat.assign(body, mat.precast_tex())
 
-    # piers: short vertical slabs standing proud of the glass line
     piers = []
     for i in range(BOX_PIERS):
         a = -half + SEG_ANGLE * (i + 0.5) / BOX_PIERS
@@ -231,9 +240,40 @@ def build_box_module(col):
     M.shade_smooth(pier_obj, angle_deg=30)
     M.smart_uv(pier_obj)
     mat.assign(pier_obj, mat.precast_tex())
+    body = M.join([body, pier_obj], 'Box_Module')
 
-    merged = M.join([body, pier_obj], 'Box_Module')
-    return merged, glass
+    # --- glazing bars, transom and rail
+    details = []
+    MULLIONS = 20
+    mr = BOX_R - 0.10
+    for i in range(MULLIONS):
+        a = -half + SEG_ANGLE * (i + 0.5) / MULLIONS
+        bar = M.box(f'box_mull{i}', size=(0.10, 0.26, g_hi - g_lo),
+                    location=(mr * math.cos(a), mr * math.sin(a),
+                              (g_lo + g_hi) * 0.5), collection=col)
+        bar.rotation_euler = (0, 0, a)
+        details.append(bar)
+
+    transom = M.tube_along_path(
+        'box_transom',
+        M.arc_points((0, 0), g_lo + (g_hi - g_lo) * 0.56, mr,
+                     -half_deg, half_deg, 16),
+        0.065, 6, col)
+    details.append(transom)
+
+    rail = M.tube_along_path(
+        'box_rail',
+        M.arc_points((0, 0), g_lo + 0.06, BOX_R - 0.22,
+                     -half_deg, half_deg, 16),
+        0.055, 8, col)
+    details.append(rail)
+
+    detail_obj = M.join(details, 'Box_Details')
+    M.shade_smooth(detail_obj, angle_deg=35)
+    M.smart_uv(detail_obj)
+    mat.assign(detail_obj, mat.mullion())
+
+    return body, glass, detail_obj
 
 
 def build_roof_signage(col):
@@ -406,13 +446,14 @@ def build_tree(col):
 def build_modules(col=None):
     col = col or M.new_collection('Stadium_Modules')
     tower, lamps = build_floodlight(col)
-    box_body, box_glass = build_box_module(col)
+    box_body, box_glass, box_details = build_box_module(col)
     mods = {
         'Stand_Module':     build_stand_module(col),
         'Roof_Module':      build_roof_module(col),
         'Signage_Module':   build_signage_module(col),
         'Box_Module':       box_body,
         'Box_Glass':        box_glass,
+        'Box_Details':      box_details,
         'RoofSign_Module':  build_roof_signage(col),
         'Seat':             build_seat(col),
         'CrowdCard':        build_crowd_card(col, cell=0, name='CrowdCard'),
@@ -482,7 +523,7 @@ def assemble_bowl(modules, col=None, seat_stride=2, crowd_fill=0.94):
             placed.append(o)
 
     for key in ('Stand_Module', 'Roof_Module', 'Signage_Module',
-                'Box_Module', 'Box_Glass'):
+                'Box_Module', 'Box_Glass', 'Box_Details'):
         src = modules[key]
         for s in range(BOWL_SEGMENTS):
             o = src.copy()

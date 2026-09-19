@@ -37,7 +37,9 @@ SKY_STRENGTH  = 0.30                     # deliberately LOW. A full-strength
                                          # key dominates and the grass keeps
                                          # its colour. Measured, not guessed.
 EXPOSURE      = -1.72
-CLOUD_LIT     = 13.0                     # radiance of a sunlit cumulus top
+CLOUD_LIT     = 17.0                     # radiance of a sunlit cumulus top
+CLOUD_SCALE   = 0.42                     # cloud-plane lookup scale
+CLOUD_WARP    = 0.55                     # domain-warp strength
 SUN_ANGLE     = math.radians(2.5)        # soft shadow edges; default is 0.526
 BOUNCE_COLOR  = (0.350, 0.550, 0.200)
 BOUNCE_ENERGY = 0.80                     # ~17% of the key
@@ -116,30 +118,68 @@ def build_sky_world():
     nt.links.new(uy.outputs[0], comb.inputs['Y'])
 
     mapping = nt.nodes.new('ShaderNodeMapping')
-    mapping.inputs['Scale'].default_value = (0.30, 0.30, 0.30)
+    mapping.inputs['Scale'].default_value = (CLOUD_SCALE,) * 3
     nt.links.new(comb.outputs['Vector'], mapping.inputs['Vector'])
 
-    noise = nt.nodes.new('ShaderNodeTexNoise')
-    noise.inputs['Scale'].default_value = 1.55
-    noise.inputs['Detail'].default_value = 9.0
-    noise.inputs['Roughness'].default_value = 0.52
-    nt.links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
+    # DOMAIN WARP. Plain fBm on a cloud plane gives long wispy streaks -- the
+    # projection stretches it and there is nothing to break the flow. Pushing
+    # the lookup around with a second, coarser noise curls those streaks into
+    # separate masses, which is the difference between cirrus and cumulus.
+    warp_noise = nt.nodes.new('ShaderNodeTexNoise')
+    warp_noise.inputs['Scale'].default_value = 0.65
+    warp_noise.inputs['Detail'].default_value = 3.0
+    nt.links.new(mapping.outputs['Vector'], warp_noise.inputs['Vector'])
 
-    # a tight ramp turns soft noise into defined cumulus with hard-ish edges
+    warp_scale = nt.nodes.new('ShaderNodeVectorMath')
+    warp_scale.operation = 'SCALE'
+    warp_scale.inputs['Scale'].default_value = CLOUD_WARP
+    nt.links.new(warp_noise.outputs['Color'], warp_scale.inputs[0])
+
+    warped = nt.nodes.new('ShaderNodeVectorMath')
+    warped.operation = 'ADD'
+    nt.links.new(mapping.outputs['Vector'], warped.inputs[0])
+    nt.links.new(warp_scale.outputs['Vector'], warped.inputs[1])
+
+    # BLOBS, not bands. Voronoi Smooth F1 gives rounded cells with real
+    # centres and gaps, which is the cauliflower massing cumulus have; fBm
+    # alone only ever produces connected ridges however it is thresholded.
+    vor = nt.nodes.new('ShaderNodeTexVoronoi')
+    vor.feature = 'SMOOTH_F1'
+    vor.distance = 'EUCLIDEAN'
+    vor.inputs['Scale'].default_value = 1.50
+    if 'Smoothness' in vor.inputs:
+        vor.inputs['Smoothness'].default_value = 0.72
+    if 'Randomness' in vor.inputs:
+        vor.inputs['Randomness'].default_value = 1.0
+    nt.links.new(warped.outputs['Vector'], vor.inputs['Vector'])
+
+    # invert: 0 at a cell centre -> 1 where the cloud is thickest
+    vor_inv = nt.nodes.new('ShaderNodeMath')
+    vor_inv.operation = 'SUBTRACT'
+    vor_inv.inputs[0].default_value = 1.0
+    nt.links.new(vor.outputs['Distance'], vor_inv.inputs[1])
+
+    noise = nt.nodes.new('ShaderNodeTexNoise')
+    noise.inputs['Scale'].default_value = 2.6
+    noise.inputs['Detail'].default_value = 9.0
+    noise.inputs['Roughness'].default_value = 0.56
+    nt.links.new(warped.outputs['Vector'], noise.inputs['Vector'])
+
+    # Massing from the Voronoi, ragged edges from the fBm. Weighted toward the
+    # blobs: let the noise lead and it goes back to looking like smoke.
+    blend = nt.nodes.new('ShaderNodeMix')
+    blend.data_type = 'FLOAT'
+    blend.inputs['Factor'].default_value = 0.34
+    nt.links.new(vor_inv.outputs[0], blend.inputs[2])
+    nt.links.new(noise.outputs['Fac'], blend.inputs[3])
+
     ramp = nt.nodes.new('ShaderNodeValToRGB')
     ramp.color_ramp.interpolation = 'EASE'
-    # Lower start = more sky covered. The reference is a busy cumulus sky, so
-    # coverage runs high; drop both numbers together to add more cloud without
-    # turning the edges to mush.
-    # RAMP WIDTH IS THE WHOLE GAME. These two numbers are 0.055 apart, and
-    # that narrowness is what gives cumulus their defined edges. At 0.18 apart
-    # the same noise renders as a flat grey haze at every camera elevation --
-    # it reads as pollution, not weather. Widen this and no amount of
-    # brightness, coverage or cloud size will rescue it; the edges are the
-    # cloud. Move the two stops together to change coverage.
-    ramp.color_ramp.elements[0].position = 0.448
-    ramp.color_ramp.elements[1].position = 0.505
-    nt.links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
+    # RAMP WIDTH IS THE WHOLE GAME -- see the README. Narrow gap = defined
+    # cumulus edges; widen it and this all collapses back to grey haze.
+    ramp.color_ramp.elements[0].position = 0.455
+    ramp.color_ramp.elements[1].position = 0.512
+    nt.links.new(blend.outputs[0], ramp.inputs['Fac'])
 
     # fade the cloud layer out at the horizon (Math has no smoothstep in 5.0,
     # so Map Range does the job)
@@ -164,15 +204,17 @@ def build_sky_world():
     # what stops the clouds reading as flat paper cut-outs.
     cloud_shade = nt.nodes.new('ShaderNodeValToRGB')
     cloud_shade.color_ramp.interpolation = 'EASE'
-    cloud_shade.color_ramp.elements[0].position = 0.50
+    cloud_shade.color_ramp.elements[0].position = 0.38
     # Cloud SHADOW, not cloud grey. Set this too low and high coverage turns
     # a sunny cumulus sky into overcast -- which is exactly what happened at
     # 2.6. Sunlit cumulus have bright bases; they are not storm clouds.
-    cloud_shade.color_ramp.elements[0].color = (5.0, 5.2, 5.8, 1.0)
-    cloud_shade.color_ramp.elements[1].position = 0.66
+    # cool grey base, brilliant white top: the contrast is what gives a
+    # cumulus its volume
+    cloud_shade.color_ramp.elements[0].color = (4.2, 4.5, 5.4, 1.0)
+    cloud_shade.color_ramp.elements[1].position = 0.52
     cloud_shade.color_ramp.elements[1].color = (CLOUD_LIT, CLOUD_LIT * 0.995,
                                                 CLOUD_LIT * 0.97, 1.0)
-    nt.links.new(noise.outputs['Fac'], cloud_shade.inputs['Fac'])
+    nt.links.new(blend.outputs[0], cloud_shade.inputs['Fac'])
 
     mix = nt.nodes.new('ShaderNodeMix')
     mix.data_type = 'RGBA'
