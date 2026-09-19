@@ -448,6 +448,8 @@ function paintDiag(){
             '  reach ' + (Bat.bodyX !== undefined ? ((Bat.grip.x + 0.74*(Bat.tip.x-Bat.grip.x) - Bat.bodyX)/(STANCE_W*0.60)).toFixed(2) : '-'));
   rows.push('bat low ' + Math.min(Bat.grip.y, Bat.tip.y).toFixed(2) +
             '  high ' + Math.max(Bat.grip.y, Bat.tip.y).toFixed(2));
+  rows.push('straight at ' + (Bat.restX >= 0 ? '+' : '') + Bat.restX.toFixed(2) +
+            '  (' + Bat.restSeen + ' frames)');
   rows.push('stance x' + Bat.scale.toFixed(2) + ' (shoulders ' + Bat.rawShoulderW.toFixed(2) + ')' +
             '  lost ' + (Diag.liveFrames ? Math.round(100*Diag.lostFrames/Diag.liveFrames) : 0) + '% of frames');
   rows.push('top hand ' + esc(Diag.topHand) + ' (mirrored)');
@@ -560,13 +562,22 @@ scene.fog    = new THREE.Fog(0xA8C6D8, 70, 190);
 
    0.95 back rather than right on the plane: the bat is 0.9 long, and any closer
    than about that and it is wider than the screen. */
-const EYE_BACK = 0.95, EYE_HEIGHT = 1.66;
+/* The eye stays where it was; only the AIM drops.
+
+   At eye height looking flat down the pitch you cannot see your own bat — true
+   in life, useless in a game, because the blade sits below the bottom of the
+   frame and you are swinging something you cannot see. Moving the camera back
+   and up instead put the shoulders within 80mm of the lens and filled the screen
+   with forearms. Tilting the aim down costs nothing and brings the bat into
+   shot with the bowler still in it. */
+const EYE_BACK = 1.90, EYE_HEIGHT = 1.72, LOOK_AT_Y = 0.75;
+const SHOULDER_Z = 1.32, SHOULDER_Y = 1.00;   // below and behind the hands, as shoulders are
 const CAM_DEAD = 0.30;    // how far the player may drift before the view follows
 let   camAim   = 0;
-const look = new THREE.Vector3(0, 1.05, -16);   // where the batter is looking
+const look = new THREE.Vector3(0, LOOK_AT_Y, -14);   // where the batter is looking
 const camera = new THREE.PerspectiveCamera(74, 1, 0.05, 260);
 camera.position.set(0, EYE_HEIGHT, EYE_BACK);
-camera.lookAt(0, 1.05, -16);
+camera.lookAt(0, LOOK_AT_Y, -14);
 
 /* Sky. Two stops on a canvas, wrapped on the inside of a big sphere — no asset
    to load and no extra request, which matters for a single file that has to work
@@ -1148,6 +1159,8 @@ const Bat = {
   mid:null, prevMid:null, handSpeed:0, swingDir:{x:0,y:-1},
   prevAng:null, axisSpin:0, follow:null, aWasTop:null, sep:0,
   bodyX:0, bodyY:1.30, shoulderW:STANCE_W, rawShoulderW:0.50, scale:1, hist:[],
+  restX:0,                  // where your hands sit at rest — your own "straight"
+  restSeen:0,               // how many frames have gone into it
   poseDt:0.045,             // measured seconds between pose results, smoothed
   lastSeg:null,             // where the blade was at the previous pose
 };
@@ -1570,7 +1583,20 @@ function shotLine(batX, bodyX, shoulderW, u, remaining, win, into, ht){
   // half a shoulder of the body, and the bat centre can only sit half a bat
   // length from the contact point, so a full shoulder was an extreme nobody
   // reached. Measured over a real innings the offset ran to 0.67 of a shoulder.
-  const lateral = clamp((batX - bodyX) / (Math.max(shoulderW, 0.40) * POS_SPAN), -1, 1);
+  /* STRAIGHT IS WHERE YOU ACTUALLY HOLD IT.
+
+     This measured how far the bat was from the middle of your shoulders, and a
+     batsman does not hold the bat there — the hands rest by the front hip, well
+     to one side. So your natural stance already read as a shot to that side, and
+     every ball went the same way: over twelve deliveries latrl came back positive
+     on nine of ten and the line on ten of ten, with nothing straight and nothing
+     to the other side at all.
+
+     The reference is now where your hands sit BETWEEN balls, learned while you
+     are standing waiting rather than swinging. That is your own idea of straight,
+     and it is what the shot is measured against. */
+  const lateral = clamp(((batX - bodyX) - Bat.restX) /
+                        (Math.max(shoulderW, 0.40) * POS_SPAN), -1, 1);
   const timing  = win > 0 ? clamp(-remaining / win, -1, 1) : 0;
   const blade   = clamp((u - 0.74) / 0.42, -1, 1);                // logged, not steering
 
@@ -1850,7 +1876,7 @@ function playShot(b, u, remaining){
   G.wagon.push({ a:hAngle, d:total, carry, runs, label, shot,
                  len:-(b.pitchZ || 0), win:hitWindow(),
                  lateral:line.lateral, timing:line.timing, blade:line.blade, cross:line.cross,
-                 fit,
+                 fit, rest:Bat.restX,
                  across:(Bat.handSpeed > 0.3 ? Bat.swingDir.x : 0),   // logged, no longer steering
                  hand:Bat.handSpeed, spin:Bat.axisSpin, rem:remaining,
                  tip:Bat.tipSpeed, pow:power, qual:quality,
@@ -2110,6 +2136,17 @@ function loop(now){
      nobody has seen for half a second is inventing a shot. */
   if(now - Bat.lastSeen > BAT_STALE_MS) Bat.ok = false;
   if(G.phase === 'live'){ Diag.liveFrames++; if(!Bat.ok) Diag.lostFrames++; }
+
+  /* Learn where the hands rest, BETWEEN balls only — while you are standing
+     waiting, not while you are swinging. Slow, so a shot you are still following
+     through on cannot drag it, and bounded, so a bad frame cannot move your idea
+     of straight halfway across the crease. */
+  if(Bat.ok && Bat.mid && (!G.ball || G.ball.state === 'dead')){
+    const off = clamp(Bat.mid.x - Bat.bodyX, -0.45, 0.45);
+    const k = Bat.restSeen < 40 ? 0.06 : 0.012;      // settles fast, then holds
+    Bat.restX += (off - Bat.restX) * k;
+    Bat.restSeen++;
+  }
   const age   = Bat.lastSeen ? now - Bat.lastSeen : Infinity;
   const shown = age < BAT_HOLD_MS;                  // still worth drawing
   const held  = shown && !Bat.ok;                   // and coasting on its last speed
@@ -2204,7 +2241,7 @@ function loop(now){
     for(let i = 0; i < 2; i++){
       const along = ((i === 0) === (HAND > 0)) ? 0.41 : 0.27;
       arms[i].visible = true;
-      aimArm(arms[i], camera.position.x + (i ? 0.17 : -0.17), 1.10, EYE_BACK - 0.08,
+      aimArm(arms[i], camera.position.x + (i ? 0.19 : -0.19), SHOULDER_Y, SHOULDER_Z,
              bat.position.x + hdx*along, bat.position.y + hdy*along, HIT_PLANE_Z);
     }
   }else{
@@ -2286,7 +2323,7 @@ function loop(now){
      ball leaves the frame and a caption tells you what happened. It tracks the
      ball while it is live and unwinds back down the pitch once the ball is dead,
      which is also the run-up you are about to watch. */
-  let lx2 = camera.position.x, ly2 = 1.05, lz2 = -16;
+  let lx2 = camera.position.x, ly2 = LOOK_AT_Y, lz2 = -14;
   if(G.ball && G.ball.state === 'hit'){
     lx2 = G.ball.x; ly2 = Math.max(G.ball.y, 0.35); lz2 = G.ball.z;
   }else if(cheer){                       // you watch them come up, same as you would
