@@ -1,0 +1,12 @@
+config_version=5
+
+[application]
+config/name="Cricket Assets — Lookdev"
+run/main_scene="res://scenes/lookdev.tscn"
+config/features=PackedStringArray("4.3", "Forward Plus")
+
+[rendering]
+renderer/rendering_method="forward_plus"
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/screen_space_aa=1

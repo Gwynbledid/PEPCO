@@ -1,0 +1,10 @@
+# Godot editor cache and throwaway validation scripts
+godot/.godot/
+godot/validate.gd
+godot/checkglb.gd
+# glTF is committed once, in exports/. The Godot project needs its own copy
+# inside res://, so godot/assets/ is a synced duplicate -- see README.
+godot/assets/
+# Blender
+__pycache__/
+*.blend1

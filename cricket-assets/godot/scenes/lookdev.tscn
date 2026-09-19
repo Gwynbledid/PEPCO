@@ -1,0 +1,91 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/batsman_pov.gd" id="1_pov"]
+[ext_resource type="Script" path="res://scripts/stadium_builder.gd" id="2_stadium"]
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat_1"]
+sky_top_color = Color(0.2, 0.404, 0.776, 1)
+sky_horizon_color = Color(0.725, 0.812, 0.902, 1)
+sky_curve = 0.13
+sky_energy_multiplier = 1.0
+ground_bottom_color = Color(0.11, 0.247, 0.09, 1)
+ground_horizon_color = Color(0.45, 0.545, 0.42, 1)
+ground_curve = 0.06
+ground_energy_multiplier = 1.0
+sun_angle_max = 12.0
+sun_curve = 0.1
+
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("SkyMat_1")
+
+[sub_resource type="Environment" id="Env_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+ambient_light_source = 3
+ambient_light_sky_contribution = 1.0
+ambient_light_energy = 0.3
+tonemap_mode = 2
+tonemap_exposure = 1.0
+tonemap_white = 6.0
+ssao_enabled = true
+ssao_radius = 1.2
+ssao_intensity = 0.4
+ssao_power = 1.5
+sdfgi_enabled = true
+sdfgi_use_occlusion = true
+sdfgi_bounce_feedback = 0.5
+glow_enabled = true
+glow_intensity = 0.42
+glow_strength = 1.0
+glow_bloom = 0.05
+glow_blend_mode = 1
+glow_hdr_threshold = 1.0
+adjustment_enabled = true
+adjustment_brightness = 1.0
+adjustment_contrast = 1.05
+adjustment_saturation = 1.15
+
+[sub_resource type="CameraAttributesPractical" id="CamAttr_1"]
+dof_blur_far_enabled = true
+dof_blur_far_distance = 18.0
+dof_blur_far_transition = 14.0
+dof_blur_amount = 0.08
+auto_exposure_enabled = false
+
+[node name="Lookdev" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_1")
+camera_attributes = SubResource("CamAttr_1")
+
+[node name="KeySun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 30, 0)
+rotation_order = 2
+rotation_degrees = Vector3(-41, -142, 0)
+light_color = Color(1, 0.964, 0.894, 1)
+light_energy = 1.6
+light_angular_distance = 2.5
+light_specular = 1.0
+shadow_enabled = true
+shadow_bias = 0.03
+shadow_normal_bias = 1.5
+directional_shadow_mode = 2
+directional_shadow_split_1 = 0.06
+directional_shadow_split_2 = 0.18
+directional_shadow_split_3 = 0.45
+directional_shadow_blend_splits = true
+directional_shadow_max_distance = 220.0
+
+[node name="GrassBounce" type="DirectionalLight3D" parent="."]
+rotation_order = 2
+rotation_degrees = Vector3(90, 0, 0)
+light_color = Color(0.35, 0.55, 0.2, 1)
+light_energy = 0.3
+light_specular = 0.0
+shadow_enabled = false
+
+[node name="BatsmanPOV" type="Camera3D" parent="."]
+script = ExtResource("1_pov")
+
+[node name="Stadium" type="Node3D" parent="."]
+script = ExtResource("2_stadium")
