@@ -234,11 +234,22 @@ rather than broken:
 - **The crowd is untextured**, so cards read as dark blocks. The 4×4 atlas that
   `crowd_card.gdshader` expects has not been authored. The shader's tint and
   bob variation cannot do their job until it exists.
+- **The gloves do not read as hands.** This is the worst asset in the set and
+  `renders/asset_02_glove.png` shows it plainly: four finger tubes wrapped as
+  full 245° arcs around the handle stack up into something like a bedspring,
+  with the cuff as a mushroom cap on top. Wrapping in cylindrical coordinates
+  did fix the earlier problem (fingers no longer float off the bat) but it
+  overcorrected — real fingers wrap maybe 180°, are not concentric, and the
+  back of the hand should be a single broad mass that hides the roll ends.
+  This one needs sculpting rather than another parameter tweak.
 - **The bat presents edge-on** in the default stance, so the face is hidden.
   Adjust `yaw_deg` in `attach_to_camera()` / `VM_YAW_DEG` if you want more face.
 - **Forearms are bare skin cylinders** — plausible in silhouette, crude up
   close, and they are 0.5 m from the camera. Long sleeves would hide most of
   this cheaply.
+- **The stand module is hard to read in isolation** — the roof slab dominates
+  and the terracing behind it is barely visible. Fine at stadium distance,
+  but it is the piece most worth revisiting if you ever show the stands close.
 - No textures anywhere. Materials are flat colour + roughness; UVs are
   unwrapped and ready for painting.
 - No character rig. Bowler and fielders are not built — in POV they are distant
@@ -255,8 +266,29 @@ rather than broken:
 
 ### Suggested order of work from here
 
-1. Fill light in the stands (one number, biggest visual win).
-2. Crowd atlas — 16 spectator cutouts, 1024², alpha.
-3. Textures for the kit and pads; the UVs are already there.
-4. Bowler and fielder low-poly characters.
-5. Ball, physics and shot animation.
+1. **Rebuild the gloves.** They are on screen every frame at half a metre and
+   they are currently the weakest thing in the project.
+2. Fill light in the stands (one number, biggest visual win for the environment).
+3. Crowd atlas — 16 spectator cutouts, 1024², alpha.
+4. Textures for the kit and pads; the UVs are already there.
+5. Bowler and fielder low-poly characters.
+6. Ball, physics and shot animation.
+
+## Inspecting assets individually
+
+`render_sheet.py` renders each asset alone on a neutral pad under the real
+lighting rig, framed automatically from its bounding box:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+  xvfb-run -a -s "-screen 0 1920x1080x24" python3 render_sheet.py
+```
+
+Scene shots hide weak geometry behind distance and depth of field — the glove
+problem above was invisible in `pov.png` and obvious the moment the asset was
+rendered on its own. Do this before trusting any asset.
+
+Note the gotcha that script documents: **`matrix_world` is cached**, and
+reading it right after setting `obj.location` from Python returns the stale
+transform. That silently mis-framed the bat and buried its blade under the
+shadow pad. Call `bpy.context.view_layer.update()` before any world-space read.
