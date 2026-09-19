@@ -35,7 +35,8 @@ blender/
   build_character.py    pads, helmet + grille, shoes
   build_body.py         torso, arms, legs, head, and the assembled batsman
   build_rig.py          21-bone armature, skinning and rigid bone binding
-  build_anim.py         idle / stance / shot_drive / run clips
+  build_anim.py         idle / stance / shot_drive (in-place clips)
+  build_locomotion.py   the run: IK-planted feet and real root travel
   export_character.py   skinned, animated batsman.glb for the engine
   build_lookdev.py      sun, skylight, grass bounce, stand fill, sky, cameras
   generate_textures.py  concrete, crowd atlas, seats, hoardings, signage
@@ -50,7 +51,9 @@ godot/
   scenes/lookdev.tscn               lighting rig only, kept as a bare harness
   materials/*.tres                  ShaderMaterials binding shaders to textures
   scripts/apply_materials.gd        swaps glTF's imported materials for ours
-  scripts/match_scene.gd            spawns the batsman and starts it idling
+  scripts/batsman_controller.gd     root motion -> CharacterBody3D, installs IK
+  scripts/foot_ik.gd                two-bone IK planting feet on real ground
+  verify_motion.gd                  measures body speed against the clip
   verify_match.gd                   headless assembly check (see below)
   scripts/stadium_builder.gd        MultiMesh instancing of the bowl
   scripts/batsman_pov.gd            POV camera + viewmodel attachment
@@ -219,6 +222,62 @@ standard PBR.
 environment, so everything here is a structural check -- the scene assembles,
 the counts are right, the animation plays. Expect to adjust light energies and
 material parameters by eye the first time you open it.
+
+## Root motion and foot planting
+
+A locomotion clip cannot be authored by rotating bones. It has to be built the
+other way round: decide where the feet **meet the ground**, advance the root,
+and let IK solve the legs. `build_locomotion.py` does that, then bakes the
+result to plain keys with the constraints removed — glTF carries no
+constraints, so an unbaked rig exports as a T-pose that ignores every target.
+
+**The stride is derived, never chosen.** With the ankle on the ground a leg's
+horizontal reach is `sqrt(leg² − hip_height²)`. The first attempt planted the
+foot 1.0 m ahead of a 0.839 m leg, so the targets were simply unreachable: one
+foot touched down for three frames out of twenty-four and the other never
+landed at all, hanging half a metre up while the root dragged it along.
+`calibrate()` now measures the leg and the running hip height and derives
+everything — currently 0.355 m reach → 3.23 m per cycle → **4.30 m/s**.
+
+**Anchor each plant to where the root is when that foot lands**, not to the
+world origin. Anchoring to the origin works by accident for the lead foot,
+whose first contact is at frame 0 where the root is also at 0, and fails
+completely for the offset foot.
+
+Measured result: feet planted for 11 of 38 foot-frames, contacts exactly half
+a cycle apart, **worst slip within a contact 7.7 mm** — and that at toe-off,
+where a real foot does roll.
+
+### Two things that silently zero out root motion in Godot
+
+- **Run the AnimationTree in PHYSICS.** `AnimationMixer` defaults to the idle
+  callback, so the tree advances on render frames while
+  `get_root_motion_position()` is read in `_physics_process`. The body then
+  travels at `idle_fps / physics_fps` of the authored speed — measured at
+  exactly **0.40×** — and the feet skate by the difference.
+- **Take `root_motion_track` verbatim from the animation.** Constructing the
+  path by hand resolves it against the wrong node and root motion reads as
+  zero with no error. The AnimationTree also has to sit beside the
+  AnimationPlayer so track paths resolve the same way.
+
+Verified: body speed **4.23 m/s against 4.30 m/s authored, 1.7% error**. That
+match is the whole point — any gap between body speed and clip speed shows up
+as sliding feet.
+
+### Foot IK
+
+The baked clips plant perfectly on a flat pitch, but the outfield is crowned
+0.45 m at the centre. `foot_ik.gd` is a `SkeletonModifier3D` that raycasts
+under each ankle and re-solves the leg analytically. It solves in the plane
+containing the hip, the target and the knee's **existing** bend direction —
+solving in a fixed world plane makes the knee swing sideways the moment the
+character turns.
+
+Instantiate it with `preload(script).new()`, not `Node.new()` plus
+`set_script()`: attaching a script to a plain Node leaves it a Node, it never
+becomes a SkeletonModifier3D, and the skeleton never calls it. The ground also
+needs `create_trimesh_collision()` — imported glTF carries none, so the
+raycast has nothing to hit.
 
 ## Rigging
 
@@ -504,12 +563,14 @@ rather than broken:
   as distinct hands. Fine in POV where they are close; weaker here.
 - **In pure side view the bat sits slightly clear of the near hand.** Front and
   three-quarter views read correctly.
-- **Animation has no root motion and no foot planting.** The clips rotate
-  bones only, so during the run cycle and the drive the feet slide and can
-  lift off the ground. Real gameplay needs a root bone driven by the movement
-  system and IK to pin the feet.
 - The drive reads as *a* swing rather than a clean front-foot drive; the
-  figure leans back through contact instead of into it.
+  figure leans back through contact instead of into it. It also has no root
+  motion — only the run does.
+- No blending between clips. `play()` swaps the tree root outright, so
+  transitions pop. A real setup wants an AnimationNodeStateMachine with
+  cross-fades.
+- Foot IK is verified to install and to have ground to raycast against, but
+  its visual result has never been seen — no GPU here.
 - **The head is a featureless sphere.** It is almost entirely hidden by the
   helmet, which is why it has not been given a face.
 - No character rig. Bowler and fielders are not built — in POV they are distant

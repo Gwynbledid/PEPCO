@@ -14,6 +14,7 @@ import bpy
 from lib import meshutil as M
 import build_anim as A
 import build_body as B
+import build_locomotion as Loco
 import build_rig as R
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +30,17 @@ def main():
     bpy.ops.object.mode_set(mode='POSE')
     actions = A.build_all(rig)
     bpy.ops.object.mode_set(mode='OBJECT')
+
+    # The run is authored separately: IK-planted feet and real root travel.
+    # bake() leaves it as the rig's active action, so push it to its own NLA
+    # track like the others or the exporter will only see this one.
+    run = Loco.build(rig)
+    rig.animation_data.action = None
+    track = rig.animation_data.nla_tracks.new()
+    track.name = 'run'
+    track.strips.new('run', 0, run)
+    track.mute = True
+    actions['run'] = run
 
     os.makedirs(EXPORT_DIR, exist_ok=True)
     path = os.path.join(EXPORT_DIR, 'batsman.glb')

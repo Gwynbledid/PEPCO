@@ -1,4 +1,4 @@
-[gd_scene load_steps=30 format=3]
+[gd_scene load_steps=32 format=3]
 
 [ext_resource type="Script" path="res://scripts/match_scene.gd" id="1_match"]
 [ext_resource type="Script" path="res://scripts/stadium_builder.gd" id="2_stadium"]
@@ -26,6 +26,7 @@
 [ext_resource type="Material" path="res://materials/crowd.tres" id="24_crowdmat"]
 [ext_resource type="Material" path="res://materials/concrete.tres" id="25_concrete"]
 [ext_resource type="Material" path="res://materials/precast.tres" id="26_precast"]
+[ext_resource type="Script" path="res://scripts/batsman_controller.gd" id="27_ctrl"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMat_1"]
 sky_top_color = Color(0.2, 0.404, 0.776, 1)
@@ -67,6 +68,10 @@ adjustment_brightness = 1.0
 adjustment_contrast = 1.05
 adjustment_saturation = 1.15
 
+[sub_resource type="CapsuleShape3D" id="Capsule_1"]
+radius = 0.25
+height = 1.75
+
 [sub_resource type="CameraAttributesPractical" id="CamAttr_1"]
 dof_blur_far_enabled = true
 dof_blur_far_distance = 18.0
@@ -76,10 +81,6 @@ auto_exposure_enabled = false
 
 [node name="Match" type="Node3D"]
 script = ExtResource("1_match")
-batsman_glb = ExtResource("6_batsman")
-batsman_clip = "idle"
-batsman_position = Vector3(-11.16, 0, 0.42)
-batsman_yaw_deg = -90.0
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Env_1")
@@ -120,6 +121,7 @@ shadow_enabled = false
 
 [node name="Ground" type="Node3D" parent="."]
 script = ExtResource("4_mats")
+generate_collision = true
 
 [node name="GroundMesh" parent="Ground" instance=ExtResource("5_ground")]
 
@@ -140,6 +142,16 @@ crowd_material = ExtResource("24_crowdmat")
 concrete_material = ExtResource("25_concrete")
 precast_material = ExtResource("26_precast")
 fill_ratio = 0.94
+
+[node name="Batsman" type="CharacterBody3D" parent="."]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, -11.16, 1, 0.42)
+script = ExtResource("27_ctrl")
+batsman_glb = ExtResource("6_batsman")
+start_clip = "idle"
+foot_ik = true
+
+[node name="Collision" type="CollisionShape3D" parent="Batsman"]
+shape = SubResource("Capsule_1")
 
 [node name="BatsmanPOV" type="Camera3D" parent="."]
 script = ExtResource("3_pov")

@@ -25,6 +25,9 @@ const MAP := {
 
 @export var apply_on_ready := true
 @export var verbose := false
+## Build static collision from the meshes. The foot IK raycasts downward and
+## needs something to hit; an imported glTF carries no collision at all.
+@export var generate_collision := false
 
 var _cache: Dictionary = {}
 
@@ -32,6 +35,21 @@ var _cache: Dictionary = {}
 func _ready() -> void:
 	if apply_on_ready:
 		apply_to(self)
+	if generate_collision:
+		_build_collision(self)
+
+
+func _build_collision(root: Node) -> int:
+	var made := 0
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+			(n as MeshInstance3D).create_trimesh_collision()
+			made += 1
+		for c in n.get_children():
+			stack.append(c)
+	return made
 
 
 func _load(path: String) -> Material:

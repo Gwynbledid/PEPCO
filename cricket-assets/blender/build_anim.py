@@ -1,5 +1,10 @@
 """Animation clips for the rigged batsman.
 
+The RUN cycle is NOT here -- it lives in build_locomotion.py, because a
+locomotion clip has to be authored from foot contacts and root travel rather
+than from bone rotations, and needs IK and a bake. Everything in this file is
+an in-place clip where the feet do not need to advance the character.
+
 Poses are dicts of bone -> (rx, ry, rz) in DEGREES; clips are lists of
 (frame, pose). Every clip is authored from the same STANCE base so they blend
 into one another without the figure snapping between neutral and crouched.
@@ -83,44 +88,6 @@ CLIPS = {
         (40, _merge()),
     ]),
 
-    # running between the wickets, loops at 32 frames
-    'run': (33, [
-        (0,  _merge({'hips': (18, 0, 0), 'spine': (12, 0, 0), 'chest': (6, 0, 0),
-                     'head': (-18, 0, 0),
-                     'thigh.L': (42, 0, 0), 'shin.L': (-18, 0, 0),
-                     'thigh.R': (-22, 0, 0), 'shin.R': (-46, 0, 0),
-                     'upperarm.L': (-38, 0, 8), 'forearm.L': (-62, 0, 0),
-                     'upperarm.R': (34, 0, -8), 'forearm.R': (-44, 0, 0),
-                     'bat': (-24, 0, 18)})),
-        (8,  _merge({'hips': (20, 0, 0), 'spine': (13, 0, 0), 'chest': (7, 0, 0),
-                     'head': (-18, 0, 0),
-                     'thigh.L': (10, 0, 0), 'shin.L': (-52, 0, 0),
-                     'thigh.R': (6, 0, 0), 'shin.R': (-20, 0, 0),
-                     'upperarm.L': (-6, 0, 8), 'forearm.L': (-50, 0, 0),
-                     'upperarm.R': (4, 0, -8), 'forearm.R': (-50, 0, 0),
-                     'bat': (-24, 0, 18)})),
-        (16, _merge({'hips': (18, 0, 0), 'spine': (12, 0, 0), 'chest': (6, 0, 0),
-                     'head': (-18, 0, 0),
-                     'thigh.L': (-22, 0, 0), 'shin.L': (-46, 0, 0),
-                     'thigh.R': (42, 0, 0), 'shin.R': (-18, 0, 0),
-                     'upperarm.L': (34, 0, 8), 'forearm.L': (-44, 0, 0),
-                     'upperarm.R': (-38, 0, -8), 'forearm.R': (-62, 0, 0),
-                     'bat': (-24, 0, 18)})),
-        (24, _merge({'hips': (20, 0, 0), 'spine': (13, 0, 0), 'chest': (7, 0, 0),
-                     'head': (-18, 0, 0),
-                     'thigh.L': (6, 0, 0), 'shin.L': (-20, 0, 0),
-                     'thigh.R': (10, 0, 0), 'shin.R': (-52, 0, 0),
-                     'upperarm.L': (4, 0, 8), 'forearm.L': (-50, 0, 0),
-                     'upperarm.R': (-6, 0, -8), 'forearm.R': (-50, 0, 0),
-                     'bat': (-24, 0, 18)})),
-        (32, _merge({'hips': (18, 0, 0), 'spine': (12, 0, 0), 'chest': (6, 0, 0),
-                     'head': (-18, 0, 0),
-                     'thigh.L': (42, 0, 0), 'shin.L': (-18, 0, 0),
-                     'thigh.R': (-22, 0, 0), 'shin.R': (-46, 0, 0),
-                     'upperarm.L': (-38, 0, 8), 'forearm.L': (-62, 0, 0),
-                     'upperarm.R': (34, 0, -8), 'forearm.R': (-44, 0, 0),
-                     'bat': (-24, 0, 18)})),
-    ]),
 }
 
 
