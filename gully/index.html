@@ -260,6 +260,12 @@ import { FilesetResolver, PoseLandmarker } from 'vision';
    CONFIG
    ═══════════════════════════════════════════════════════════════ */
 
+// Bumped by hand on every commit that changes what's on screen. Shown in the
+// corner during play, always, no ?debug needed — the fastest way to tell
+// "your build didn't update" (a stale cache) apart from "your build updated
+// and did this on purpose", which look identical in a screenshot otherwise.
+const BUILD_TAG = 'viewmodel-1';
+
 const WASM  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
 const MODEL = {
   lite: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
@@ -2588,8 +2594,16 @@ function loop(now){
   }
 
   renderer.render(scene, camera);
-  if(!$('diag').hidden)
-    $('diag').textContent = `${G.fps.toFixed(0)} fps · pose ${G.poseMs.toFixed(1)}ms · ${G.tier}`;
+  if(!$('diag').hidden){
+    // the bat model falling back to primitives is a "warn", not a fatal, so it
+    // never hits the #fatal banner — but a silent fallback is still a silent
+    // catch by another name. This line is on-screen every innings, DEBUG or
+    // not, specifically so "the bat still looks the same" has an answer that
+    // doesn't require finding a hidden toggle first.
+    let d = `${G.fps.toFixed(0)} fps · pose ${G.poseMs.toFixed(1)}ms · ${G.tier} · build ${BUILD_TAG}`;
+    if(Diag.state.viewmodel[0] === 'warn') d += ' · bat model: ' + Diag.state.viewmodel[1];
+    $('diag').textContent = d;
+  }
   if(DEBUG && now - lastDbgPaint > 120){ lastDbgPaint = now; paintDiag(); }
 }
 let lastDbgPaint = 0;
