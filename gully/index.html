@@ -264,7 +264,7 @@ import { FilesetResolver, PoseLandmarker } from 'vision';
 // corner during play, always, no ?debug needed — the fastest way to tell
 // "your build didn't update" (a stale cache) apart from "your build updated
 // and did this on purpose", which look identical in a screenshot otherwise.
-const BUILD_TAG = 'viewmodel-1';
+const BUILD_TAG = 'viewmodel-2';
 
 const WASM  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
 const MODEL = {
@@ -1069,6 +1069,31 @@ async function loadViewmodel(){
       const geo = m.geometry.clone();
       geo.applyMatrix4(m.matrixWorld);                 // bake the file's own hierarchy
       geo.applyMatrix4(fix);                           // then into the game's bat space
+
+      /* THE BLADE WAS INVISIBLE, not merely unconvincing. This exporter's
+         triangle winding runs the opposite way from what WebGL treats as
+         "front", so backface culling dropped the flat blade from the camera
+         for roughly half its rotation range. A cylinder or a glove blob hides
+         this: some face of a rounded solid is always front-facing regardless
+         of which way the winding runs. A single-sided plank does not have
+         that luxury.
+
+         Reversing each triangle's last two indices flips the winding without
+         touching a single vertex position, and recomputing normals from that
+         corrected winding fixes the lighting to match.
+
+         DoubleSide looked like the safe belt-and-braces addition on top of
+         this and did the opposite: on the software rasteriser this was
+         verified against, a double-sided paper-thin mesh rendered as nothing
+         at all rather than both faces — worse than the original bug, and
+         silently so, no error to catch. Reversed winding on a single-sided
+         material is the whole fix; nothing else here. */
+      if(geo.index){
+        const idx = geo.index.array;
+        for(let i=0;i<idx.length;i+=3){ const t2=idx[i+1]; idx[i+1]=idx[i+2]; idx[i+2]=t2; }
+        geo.index.needsUpdate = true;
+        geo.computeVertexNormals();
+      }
 
       const src = Array.isArray(m.material) ? m.material[0] : m.material;
       const srcName = (src && src.name) || '';
@@ -2602,6 +2627,10 @@ function loop(now){
     // doesn't require finding a hidden toggle first.
     let d = `${G.fps.toFixed(0)} fps · pose ${G.poseMs.toFixed(1)}ms · ${G.tier} · build ${BUILD_TAG}`;
     if(Diag.state.viewmodel[0] === 'warn') d += ' · bat model: ' + Diag.state.viewmodel[1];
+    // "I can only hit leg side" is a Bat.restX question, not a bug I can see
+    // from a screenshot of the shot itself — the number that actually decides
+    // it needs to be on screen too, same reasoning as the line above.
+    d += ' · straight ' + (Bat.restX >= 0 ? '+' : '') + Bat.restX.toFixed(2) + ' (' + Bat.restSeen + 'fr)';
     $('diag').textContent = d;
   }
   if(DEBUG && now - lastDbgPaint > 120){ lastDbgPaint = now; paintDiag(); }
