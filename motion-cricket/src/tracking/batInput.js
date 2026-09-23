@@ -112,12 +112,26 @@ export class BatInput {
       });
       grip = { x: gx / palms.length, y: gy / palms.length };
 
-      // In a fist wrapped around a handle, the line from the index knuckle to
-      // the little-finger knuckle runs along the handle, pointing to the blade.
+      // In a fist wrapped around a handle (bat, club, sword, torch), the line
+      // of the knuckles runs along the handle: the handle end is at the
+      // little finger and the blade comes out past the index finger and thumb.
+      // When the fist faces the camera side-on the knuckles overlap and the
+      // line is unreliable, so each hand is weighted by how clearly it shows.
+      let weight = 0;
       for (const lm of raw.hands) {
-        const [kx, ky] = norm((lm[PINKY_MCP].x - lm[INDEX_MCP].x) * a, lm[PINKY_MCP].y - lm[INDEX_MCP].y);
-        dirX += kx;
-        dirY += ky;
+        const kx = (lm[INDEX_MCP].x - lm[PINKY_MCP].x) * a;
+        const ky = lm[INDEX_MCP].y - lm[PINKY_MCP].y;
+        const scale = Math.hypot((lm[9].x - lm[0].x) * a, lm[9].y - lm[0].y) || 1;
+        const w = Math.min(1, Math.max(0, (Math.hypot(kx, ky) / scale - 0.15) / 0.35));
+        const [nx, ny] = norm(kx, ky);
+        dirX += nx * w;
+        dirY += ny * w;
+        weight += w;
+      }
+      // Weak reading: lean on the previous direction instead of flipping around.
+      if (weight < 0.6) {
+        dirX += raw.dir[0] * (0.6 - weight) * 2;
+        dirY += raw.dir[1] * (0.6 - weight) * 2;
       }
       // With two hands on the handle, the line between them is a steadier
       // estimate of the handle.
