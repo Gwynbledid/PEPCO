@@ -1,0 +1,11 @@
+{
+  "name": "Motion Cricket",
+  "short_name": "Cricket",
+  "description": "Swing for real: a first-person cricket game controlled with your camera.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1e6fe0",
+  "theme_color": "#1e6fe0",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

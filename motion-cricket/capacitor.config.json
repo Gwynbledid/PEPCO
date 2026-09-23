@@ -1,0 +1,8 @@
+{
+  "appId": "com.motioncricket.game",
+  "appName": "Motion Cricket",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}

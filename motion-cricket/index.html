@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#1e6fe0" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <title>Motion Cricket</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <!-- In-game HUD -->
+      <div id="hud" hidden>
+        <div class="scorebug">
+          <div class="sb-team">YOU</div>
+          <div class="sb-runs" id="sbRuns">0/0</div>
+          <div class="sb-meta">
+            <span>Overs <b id="sbOvers">0.0</b></span>
+            <span>RR <b id="sbRate">0.00</b></span>
+          </div>
+          <div class="ticker" id="ticker"></div>
+        </div>
+        <button class="icon-btn" id="pauseBtn" aria-label="Pause">❚❚</button>
+        <div class="speed" id="speed"></div>
+        <div class="hint" id="hint"></div>
+        <div class="toast" id="toast"></div>
+        <div class="result" id="result"><div class="big"></div><div class="small"></div></div>
+        <canvas id="radar" width="180" height="180"></canvas>
+        <div class="cam-box" id="camBox"><canvas id="camOverlay"></canvas></div>
+        <div class="flash" id="flash"></div>
+        <div id="confetti"></div>
+      </div>
+      <div class="fade" id="fade"></div>
+
+      <!-- Main menu -->
+      <section class="screen" id="menu">
+        <div class="menu-card">
+          <img id="logoImg" alt="" hidden />
+          <h1 class="logo" id="logoText">MOTION<span>CRICKET</span></h1>
+          <p class="tagline">Swing for real. Hit for six.</p>
+          <div class="menu-buttons">
+            <button class="btn big primary" id="playBtn">▶ PLAY</button>
+            <button class="btn" id="calibBtn">🎯 Calibrate</button>
+            <button class="btn" id="settingsBtn">⚙ Settings</button>
+            <button class="btn" id="helpBtn">❔ How to play</button>
+          </div>
+          <p class="mode-line" id="modeLine"></p>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="screen" id="settings" hidden>
+        <div class="panel">
+          <h2>Settings</h2>
+          <div class="field">
+            <label>Control</label>
+            <div class="seg" data-key="input">
+              <button data-v="hands">🙌 Hands</button>
+              <button data-v="stick">🏏 Stick</button>
+              <button data-v="touch">👆 Touch / Mouse</button>
+            </div>
+            <p class="note" id="inputNote"></p>
+          </div>
+          <div class="field">
+            <label>Batting hand</label>
+            <div class="seg" data-key="hand">
+              <button data-v="R">Right-handed</button>
+              <button data-v="L">Left-handed</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Bowling pace</label>
+            <div class="seg" data-key="pace">
+              <button data-v="slow">Slow</button>
+              <button data-v="medium">Medium</button>
+              <button data-v="fast">Fast</button>
+            </div>
+          </div>
+          <div class="field toggles">
+            <label class="tog"><input type="checkbox" data-key="aimAssist" /> Aim assist (only timing matters)</label>
+            <label class="tog"><input type="checkbox" data-key="showCam" /> Show camera preview</label>
+            <label class="tog"><input type="checkbox" data-key="sound" /> Sound</label>
+          </div>
+          <button class="btn primary" id="settingsDone">Done</button>
+        </div>
+      </section>
+
+      <!-- Help -->
+      <section class="screen" id="help" hidden>
+        <div class="panel scroll">
+          <h2>How to play</h2>
+          <ol class="help">
+            <li><b>Set up.</b> Put your phone or laptop at chest height, landscape works best. Stand 1.5–2 m back in good light.</li>
+            <li><b>Grip.</b> Hold both hands together like a bat, or hold a stick (a broom handle or rolled newspaper) with a <b>bright coloured tip</b>: tape, a sock or a ball.</li>
+            <li><b>Calibrate</b> once. It learns your stance, reach and swing speed.</li>
+            <li><b>Time it.</b> Start your swing as the ball comes past the halfway mark after it bounces.</li>
+            <li><b>Aim.</b> The ball goes the way the bat moves. Swing straight for a straight drive, across to the right for the right side, across to the left for the left side. Early timing pulls it to the leg side, late timing to the off side.</li>
+            <li><b>Loft or ground.</b> Swing <b>upward</b> through the ball to loft it in the air. Swing <b>downward</b> to keep it on the ground.</li>
+            <li>Lofted shots can be <b>caught</b>. Don't miss a straight ball, or you'll be <b>bowled</b>.</li>
+          </ol>
+          <button class="btn primary" id="helpDone">Got it</button>
+        </div>
+      </section>
+
+      <!-- Calibration -->
+      <section class="screen calib" id="calib" hidden>
+        <div class="calib-layout">
+          <div class="cal-stage" id="calStage">
+            <video id="cam" playsinline muted></video>
+            <canvas id="calOverlay"></canvas>
+          </div>
+          <div class="cal-side">
+            <div class="cal-dots" id="calDots"></div>
+            <h2 id="calTitle">Calibration</h2>
+            <p id="calText"></p>
+            <div id="calLive">
+              <div class="ring" id="calRing"><span></span></div>
+              <p class="cal-status" id="calStatus"></p>
+              <div class="row">
+                <button class="btn small" id="calBack">✕ Cancel</button>
+                <button class="btn small" id="calSkip">Skip (use defaults)</button>
+              </div>
+            </div>
+            <div id="calDone" hidden>
+              <p class="cal-summary" id="calSummary"></p>
+              <div class="row">
+                <button class="btn small" id="calRedo">↺ Redo</button>
+                <button class="btn primary" id="calPlay">▶ Play</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pause -->
+      <section class="screen" id="pause" hidden>
+        <div class="panel narrow">
+          <h2>Paused</h2>
+          <button class="btn primary" id="resumeBtn">▶ Resume</button>
+          <button class="btn" id="recalBtn">🎯 Recalibrate</button>
+          <button class="btn" id="pauseSettingsBtn">⚙ Settings</button>
+          <button class="btn" id="quitBtn">⌂ Main menu</button>
+        </div>
+      </section>
+
+      <!-- Loading / errors -->
+      <section class="screen" id="loading" hidden>
+        <div class="panel narrow">
+          <div class="spinner"></div>
+          <p id="loadingText">Loading…</p>
+          <div id="loadingError" hidden>
+            <p class="error" id="errorText"></p>
+            <button class="btn" id="useTouchBtn">Play with touch / mouse instead</button>
+            <button class="btn" id="errorBack">Back</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="rotate-tip" id="rotateTip">↻ Turn your phone sideways for the best view</div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
