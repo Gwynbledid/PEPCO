@@ -16,6 +16,19 @@ npm install          # also copies the MediaPipe runtime and downloads the hand 
 npm run dev          # http://localhost:5173
 ```
 
+**Windows PowerShell:** older PowerShell doesn't accept `&&`, so run the
+commands one per line:
+
+```powershell
+cd motion-cricket
+npm install
+npm run dev
+```
+
+If npm says *"running scripts is disabled on this system"*, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `npm.cmd`
+in place of `npm`.
+
 - **Laptop:** open `http://localhost:5173`. Camera access works on localhost.
 - **Phone on the same Wi-Fi:** run `npm run dev:phone` and open the
   `https://<your-computer-ip>:5173` address it prints. Phones only allow the
