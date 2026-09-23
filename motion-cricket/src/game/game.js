@@ -367,7 +367,7 @@ export class Game {
     this.shotInfo = shotInfo;
     this.hitTime = now;
     this.outcome = this.fielders.resolve(this.shot, [
-      { pos: this.bowler.fieldPos, speed: 6, reaction: 0.4, f: null },
+      { pos: this.bowler.fieldPos, speed: 4.5, reaction: 0.5, f: null },
     ]);
     this.fielders.chase(this.outcome, this.shot);
     this.audio.hit(shotInfo.power, contact === 'edge');

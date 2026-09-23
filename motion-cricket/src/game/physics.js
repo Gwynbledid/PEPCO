@@ -20,11 +20,14 @@ export function planDelivery(pace, rand = Math.random) {
   const r = rand();
   // Mostly good length, some full, some short.
   const length = r < 0.18 ? 'full' : r < 0.78 ? 'good' : r < 0.93 ? 'short' : 'yorker';
+  // Where it pitches, in metres in front of the batter's stumps. Real
+  // lengths, so the ball climbs to thigh/waist height by the time it
+  // reaches the bat (short balls to chest height).
   const bounceZ = {
-    yorker: -0.9 - rand() * 0.5,
-    full: -3.0 - rand() * 1.2,
-    good: -4.8 - rand() * 1.8,
-    short: -8.0 - rand() * 2.0,
+    yorker: -0.8 - rand() * 0.5,
+    full: -3.6 - rand() * 1.4,
+    good: -5.8 - rand() * 1.8,
+    short: -8.6 - rand() * 1.8,
   }[length];
   return {
     speed: lo + rand() * (hi - lo),
@@ -50,7 +53,7 @@ export function buildDelivery(release, plan) {
   const v0 = new THREE.Vector3(flat.x * vh, vy0, flat.z * vh);
   const vyImpact = vy0 - G * tb;
   // Off the pitch: loses some pace, bounces up, and moves off the seam.
-  const e = 0.52;
+  const e = 0.7;
   const v1 = new THREE.Vector3(v0.x * 0.9 + plan.seam, -vyImpact * e, v0.z * 0.9);
 
   const posAt = (t, out = new THREE.Vector3()) => {
@@ -100,7 +103,7 @@ export function simulateShot(origin, velocity) {
     }
     if (rolling) {
       const sp = Math.hypot(v.x, v.z);
-      const ns = Math.max(0, sp - 5.0 * DT);
+      const ns = Math.max(0, sp - 2.8 * DT); // rolling friction on a fast outfield
       if (ns < 0.3) break;
       v.x *= ns / sp;
       v.z *= ns / sp;
@@ -115,8 +118,8 @@ export function simulateShot(origin, velocity) {
       if (!bounced) firstBounce = p.clone();
       bounced = true;
       v.y = -v.y * 0.42;
-      v.x *= 0.72;
-      v.z *= 0.72;
+      v.x *= 0.85;
+      v.z *= 0.85;
       if (v.y < 1.2) {
         v.y = 0;
         rolling = true;

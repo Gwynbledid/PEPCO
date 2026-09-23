@@ -10,15 +10,15 @@ const FIELD = [
   { name: 'Slip', a: 160, r: 14 },
   { name: 'Point', a: 95, r: 27 },
   { name: 'Cover', a: 55, r: 32 },
-  { name: 'Mid-off', a: 16, r: 38 },
-  { name: 'Mid-on', a: -16, r: 38 },
+  { name: 'Mid-off', a: 24, r: 36 },
+  { name: 'Mid-on', a: -24, r: 36 },
   { name: 'Midwicket', a: -58, r: 33 },
   { name: 'Square leg', a: -95, r: 27 },
   { name: 'Fine leg', a: -150, r: 47 },
   { name: 'Deep cover', a: 62, r: 55 },
 ];
 
-const REACH = 1.7;
+const REACH = 1.5;
 const CATCH_HEIGHT = 2.6;
 
 export const polar = (deg, r, hand = 1) => {
@@ -69,7 +69,7 @@ export class Fielders {
    */
   resolve(shot, extras = []) {
     const fielders = [
-      ...this.list.map((f) => ({ f, pos: f.home, speed: f.keeper ? 4.5 : 7.2, reaction: f.keeper ? 0.1 : 0.3 })),
+      ...this.list.map((f) => ({ f, pos: f.home, speed: f.keeper ? 4.5 : 6.2, reaction: f.keeper ? 0.1 : 0.45 })),
       ...extras,
     ];
     const s = shot.samples;

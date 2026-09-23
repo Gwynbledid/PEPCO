@@ -7,6 +7,9 @@ const PINKY_MCP = 17;
 // Distance from the grip to the "sweet spot" of the bat, in calibrated units.
 const BAT_REACH = 0.9;
 const HISTORY_SECONDS = 1.5;
+// Hands travel less than the bat head during a swing; this scales hand
+// speed up to roughly bat-head speed.
+const GRIP_GAIN = 1.6;
 
 export const DEFAULT_CALIBRATION = {
   stance: { x: 0.5, y: 0.6 },
@@ -113,21 +116,31 @@ export class BatInput {
       grip = { x: gx / palms.length, y: gy / palms.length };
 
       // In a fist wrapped around a handle (bat, club, sword, torch), the line
-      // of the knuckles runs along the handle: the handle end is at the
-      // little finger and the blade comes out past the index finger and thumb.
+      // of the knuckles runs along the handle. Which END is the blade is
+      // ambiguous from landmarks alone, so:
+      //  1. the blade never points back along the forearm (wrist side), and
+      //  2. otherwise it usually comes out past the index finger and thumb.
       // When the fist faces the camera side-on the knuckles overlap and the
       // line is unreliable, so each hand is weighted by how clearly it shows.
       let weight = 0;
-      for (const lm of raw.hands) {
+      palms.forEach((palm, hi) => {
+        const lm = raw.hands[hi];
         const kx = (lm[INDEX_MCP].x - lm[PINKY_MCP].x) * a;
         const ky = lm[INDEX_MCP].y - lm[PINKY_MCP].y;
         const scale = Math.hypot((lm[9].x - lm[0].x) * a, lm[9].y - lm[0].y) || 1;
         const w = Math.min(1, Math.max(0, (Math.hypot(kx, ky) / scale - 0.15) / 0.35));
-        const [nx, ny] = norm(kx, ky);
+        let [nx, ny] = norm(kx, ky);
+        const [fx, fy] = norm((lm[0].x - palm.x) * a, lm[0].y - palm.y); // towards the forearm
+        const intoArm = nx * fx + ny * fy;
+        const alongPrev = nx * raw.dir[0] + ny * raw.dir[1];
+        if (intoArm > 0.3 || (intoArm > -0.3 && alongPrev < -0.5)) {
+          nx = -nx;
+          ny = -ny;
+        }
         dirX += nx * w;
         dirY += ny * w;
         weight += w;
-      }
+      });
       // Weak reading: lean on the previous direction instead of flipping around.
       if (weight < 0.6) {
         dirX += raw.dir[0] * (0.6 - weight) * 2;
@@ -217,6 +230,12 @@ export class BatInput {
       hx = this.f.hx.filter(hx, t);
       hy = this.f.hy.filter(hy, t);
     }
+    // Swing motion. In hand mode it comes from the hands themselves: the bat
+    // angle there is only an estimate, and a flicker in it must not look
+    // like a swing. With a stick (or touch) it comes from the bat head.
+    const useGrip = this.mode === 'hands';
+    const mx = useGrip ? gx * GRIP_GAIN : hx;
+    const my = useGrip ? gy * GRIP_GAIN : hy;
     // Velocity over a ~60 ms baseline is less noisy than frame to frame.
     let vx = 0;
     let vy = 0;
@@ -225,14 +244,14 @@ export class BatInput {
       if (t - h.t >= 0.06 || i === 0) {
         const dt = t - h.t;
         if (dt > 0.005) {
-          vx = (hx - h.hx) / dt;
-          vy = (hy - h.hy) / dt;
+          vx = (mx - h.mx) / dt;
+          vy = (my - h.my) / dt;
         }
         break;
       }
     }
     Object.assign(s, { tracked: true, t, gx, gy, hx, hy, angle, vx, vy, speed: Math.hypot(vx, vy) });
-    this.history.push({ t, gx, gy, hx, hy, vx, vy, speed: s.speed });
+    this.history.push({ t, gx, gy, hx, hy, mx, my, vx, vy, speed: s.speed });
     while (this.history.length && t - this.history[0].t > HISTORY_SECONDS) this.history.shift();
 
     // Swing onset: speed rises through the threshold (hysteresis re-arms it).
@@ -252,7 +271,7 @@ export class BatInput {
     return out;
   }
 
-  /** Mean velocity of the bat head over [t0, t1]. */
+  /** Mean swing velocity (hands in hand mode, bat head otherwise) over [t0, t1]. */
   velocityBetween(t0, t1) {
     let vx = 0;
     let vy = 0;

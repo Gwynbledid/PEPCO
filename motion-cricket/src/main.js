@@ -37,7 +37,9 @@ const store = {
   },
 };
 const settings = { ...DEFAULTS, ...store.get('mc.settings', {}) };
-const calibKey = (mode) => `mc.calib.${mode}`;
+// v2: hand-mode swing speed is now measured from the hands, so old
+// calibrations no longer match and players are asked to recalibrate.
+const calibKey = (mode) => `mc.calib.v2.${mode}`;
 
 // ---------- Core objects ----------
 const audio = new Sound();

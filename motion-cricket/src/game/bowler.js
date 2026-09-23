@@ -20,7 +20,7 @@ export class Bowler {
     this.state = 'idle';
     this.t = 0;
     this.phase = 0;
-    this.fieldPos = new THREE.Vector3(1.8, 0, -16.8);
+    this.fieldPos = new THREE.Vector3(3.4, 0, -15.5); // follow-through ends off the pitch, out of the straight line
     this.reset();
   }
 

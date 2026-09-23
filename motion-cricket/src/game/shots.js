@@ -30,10 +30,16 @@ export function describeShot({ vx, vy, peak, e, contact, hand, refSpeed, rand = 
   const timingQuality = 1 - 0.28 * Math.min(Math.abs(en), 2);
 
   // Angle from straight down the ground; + is to the batter's right (world +x).
-  let theta = h * 95 + en * 30 * hand + (rand() - 0.5) * 10;
+  // Swings within ~20° of vertical count as straight, and nobody swings
+  // perfectly vertically, so the sideways part only kicks in beyond that.
+  const side = Math.sign(h) * Math.max(0, (Math.abs(h) - 0.35) / 0.65);
+  // Near-perfect timing keeps a straight swing straight.
+  const bend = Math.abs(en) < 0.5 ? 0 : en - Math.sign(en) * 0.5;
+  let theta = side * 100 + bend * 30 * hand + (rand() - 0.5) * 8;
   let loft = u > 0.2;
   let power = clamp(peak / refSpeed, 0.35, 1.15) * timingQuality;
-  let elevation = loft ? 24 + 14 * clamp(u, 0, 1) + rand() * 4 : 2 + rand() * 5;
+  // Ground shots are hit down into the turf so they bounce early and can't be caught.
+  let elevation = loft ? 24 + 14 * clamp(u, 0, 1) + rand() * 4 : -4 + rand() * 4;
 
   if (contact === 'edge') {
     // Outside edge flies off to third man, inside edge to fine leg.
