@@ -8,6 +8,7 @@ import { buildCrowd } from './crowd.js';
 import { buildField } from './field.js';
 import { FirstPersonRig } from './fpRig.js';
 import { resolveOutcome } from './outcome.js';
+import { BatPose } from './batPose.js';
 import { buildDelivery, launchVelocity, planDelivery, shotDistance, shotPos, simulateShot } from './physics.js';
 import { shotFromSwing } from './shots.js';
 import { buildSky } from './sky.js';
@@ -53,6 +54,9 @@ export class Game {
     this.nonStriker = new NonStriker(scene, assets);
     this.batter = new Batter(scene, { name: settings.name, number: settings.number, assets });
     this.rig = new FirstPersonRig(camera, assets);
+    this.batPose = new BatPose();
+    // Learned timing correction (camera and screen delay differ per device).
+    this.timingAdj = 0;
 
     this.mode = 'menu';
     this.state = 'idle';
@@ -135,6 +139,7 @@ export class Game {
     this.batter.show(false);
     this.rig.show(true);
     this.rig.assist(null, 0);
+    this.batPose.reset();
     this.resetStumps();
     this.hud.clearResult();
     this.hud.sixMeter(null);
@@ -204,7 +209,7 @@ export class Game {
   _play(dt, sdt, now) {
     const inp = this.input.state;
     const glow = this.input.detector.speed / Math.max(1, this.input.detector.ref) - 0.25;
-    if (this.camMode === 'fp') this.rig.update(inp, glow);
+    if (this.camMode === 'fp') this.rig.update(this.batPose.update(dt, this.input.detector, inp, this.hand), glow);
 
     switch (this.state) {
       case 'ready':
@@ -288,7 +293,7 @@ export class Game {
     const d = this.input.detector;
     return pickStroke(this._strokes(), {
       T: this.releaseT + this.delivery.tContact,
-      latency: (this.settings.latency ?? TIMING.latency * 1000) / 1000,
+      latency: (this.settings.latency ?? TIMING.latency * 1000) / 1000 + this.timingAdj,
       now,
       vOn: d.vOn,
       onsetToPeak: this.input.calib.onsetToPeak,
@@ -312,10 +317,14 @@ export class Game {
         if (this._contact(pick, now)) return;
       } else if (now > T + TIMING.lateWait) {
         this.decided = true;
-        if (pick && pick.early) this.hud.toast('Too early!');
+        if (pick && pick.early) {
+          this.hud.toast('Too early!');
+          this._learnTiming(pick.e);
+        }
       }
     }
-    if (t >= d.tStumps && !this.resolved) this._missed();
+    // A late swing still gets its chance before the ball is given as missed.
+    if (t >= d.tStumps && !this.resolved && (this.decided || now > T + TIMING.lateWait)) this._missed();
   }
 
   /** The bat met the ball (or swished past it). Returns true if it's a hit. */
@@ -445,8 +454,15 @@ export class Game {
     if (this.camMode === 'six') this._sixCamera(dt, st);
   }
 
+  /** Nudges the timing towards the player's habit, so their device's delay stops mattering. */
+  _learnTiming(e) {
+    if (this.settings.autoTiming === false) return;
+    this.timingAdj = Math.max(-0.12, Math.min(0.3, this.timingAdj + Math.max(-0.2, Math.min(0.2, e)) * 0.35));
+  }
+
   _finalize() {
     const h = this.hit;
+    this._learnTiming(h.e);
     const o = resolveOutcome(h.flight, [
       ...this.fielders.plan(),
       { name: 'Bowler', pos: { x: this.bowler.fieldPos.x, z: this.bowler.fieldPos.z }, speed: 4.5, reaction: 0.55 },

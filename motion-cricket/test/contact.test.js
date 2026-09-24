@@ -71,7 +71,8 @@ test('the backlift before the ball arrives does not use up the swing', () => {
 test('a swing long before the ball is "too early"', () => {
   const det = swingPeakingAt(T + LAT - 0.6);
   const res = pickStroke(det.since(0), params(det, 3));
-  assert.deepEqual(res, { early: true });
+  assert.equal(res.early, true);
+  assert.ok(res.e < -0.4);
 });
 
 test('early and late swings get negative and positive timing', () => {

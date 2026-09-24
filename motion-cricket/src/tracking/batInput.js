@@ -155,32 +155,56 @@ export class BatInput {
     s.conf = conf;
     s.t = t;
 
-    // Swing motion, in hand sizes: the stick tip (stick mode) or the hands.
-    const point = this.mode === 'stick' ? tip : grip;
-    if (point && scale > 0) this._motion(t, point, scale);
-    else this.detector.miss(t);
+    // Swing motion, in hand sizes: the stick tip when it's seen, otherwise
+    // the hands (a fast swing often blurs the stick for a frame or two).
+    this._motion(t, this.mode === 'stick' ? tip : null, grip, scale);
   }
 
-  _motion(t, p, scale) {
+  _motion(t, tip, grip, scale) {
     const m = this.motion;
-    if (!m || t - m.t > 0.3) {
-      this.motion = { x: -p.x / scale, y: -p.y / scale, px: p.x, py: p.y, t };
-      this.detector.push(t, this.motion.x, this.motion.y);
+    if ((!tip && !grip) || !(scale > 0)) {
+      this.detector.miss(t);
       return;
     }
-    // Integrate pixel steps divided by the current hand size, so a changing
-    // hand size never looks like movement. Mirrored, y up.
-    const dx = -(p.x - m.px) / scale;
-    const dy = -(p.y - m.py) / scale;
+    if (!m || t - m.t > 0.3) {
+      this.motion = { x: 0, y: 0, tip, grip, t };
+      this.detector.push(t, 0, 0);
+      return;
+    }
+    // Integrate steps (divided by the current hand size, so a changing hand
+    // size never looks like movement) from whichever point was seen in both
+    // frames. The stick's tip travels about twice as far as the hands.
+    let dx;
+    let dy;
+    if (tip && m.tip) {
+      dx = tip.x - m.tip.x;
+      dy = tip.y - m.tip.y;
+    } else if (grip && m.grip) {
+      const gain = this.mode === 'stick' ? 2.2 : 1;
+      dx = (grip.x - m.grip.x) * gain;
+      dy = (grip.y - m.grip.y) * gain;
+    } else {
+      m.tip = tip;
+      m.grip = grip;
+      m.t = t;
+      this.detector.miss(t);
+      return;
+    }
+    // Mirrored, y up.
+    dx = -dx / scale;
+    dy = -dy / scale;
     // More than ~25 hand sizes in one frame is a tracking glitch.
     if (Math.hypot(dx, dy) > 25 * Math.max(1, (t - m.t) * 30)) {
+      m.tip = tip;
+      m.grip = grip;
+      m.t = t;
       this.detector.miss(t);
       return;
     }
     m.x += dx;
     m.y += dy;
-    m.px = p.x;
-    m.py = p.y;
+    m.tip = tip;
+    m.grip = grip;
     m.t = t;
     this.detector.push(t, m.x, m.y);
   }

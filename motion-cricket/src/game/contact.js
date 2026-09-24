@@ -25,18 +25,18 @@ import { TIMING } from './config.js';
 export function pickStroke(strokes, { T, latency, now, vOn, onsetToPeak = 0.12 }) {
   const ideal = T + latency;
   let best = null;
-  let early = false;
+  let early = null;
   for (const s of strokes) {
     if (s.onset > now) continue;
-    if (s.onset < ideal - 0.8) continue; // long before the ball
+    if (s.onset < ideal - 0.9) continue; // long before the ball
     if (!s.active && s.tPeak < ideal - TIMING.early) {
-      if (s.valid) early = true;
+      if (s.valid) early = s;
       continue;
     }
     if (!s.active && s.peak < vOn) continue;
     if (!best || s.peak > best.peak) best = s;
   }
-  if (!best) return early ? { early: true } : null;
+  if (!best) return early ? { early: true, e: early.tPeak - ideal } : null;
   let tPeak = best.tPeak;
   // A swing still speeding up: its peak is yet to come.
   if (best.active && now - best.tPeak < 0.04) tPeak = Math.max(best.tPeak, best.onset + onsetToPeak);

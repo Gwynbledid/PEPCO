@@ -29,8 +29,8 @@ export const PACES = {
 // Contact timing (seconds). e = (measured bat peak) - (ball at the bat + latency).
 export const TIMING = {
   latency: 0.1, // camera + processing + display, default (adjustable in settings)
-  early: 0.4, // a swing peaking earlier than this missed the ball
-  lateWait: 0.14, // how long after the ball reaches the bat a late swing can still start
+  early: 0.5, // a swing peaking earlier than this missed the ball
+  lateWait: 0.3, // how long after the ball reaches the bat a late swing can still start
   refine: 0.2, // after a provisional hit, how long to keep refining the shot
   perfect: 0.035,
   good: 0.08,

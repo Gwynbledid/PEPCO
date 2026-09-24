@@ -134,8 +134,8 @@ export class FirstPersonRig {
     this.rig.updateMatrix();
     // Forearms only, angled in from the elbows at the bottom corners, so the
     // blade between them stays in view.
-    // Both forearms come from the side away from where the blade hangs.
-    const lean = THREE.MathUtils.clamp(-this.dir.x * 3, -1, 1) || this.hand;
+    // Both forearms come from the side the hands are on.
+    const lean = THREE.MathUtils.clamp(grip.x * 6, -1, 1) || this.hand;
     this.side = this.side === undefined ? lean : this.side + (lean - this.side) * 0.12;
     const sx = this.side >= 0 ? 1 : -1;
     const elbows = [new THREE.Vector3(0.3 * sx, -0.6, -0.38), new THREE.Vector3(0.5 * sx, -0.58, -0.3)];

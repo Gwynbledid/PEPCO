@@ -56,6 +56,14 @@ the game server.
   doing at that moment. Picking the bat up (the backlift) doesn't use up your
   shot, and neither does nudging it or fidgeting: a swing has to be fast and
   travel a real distance.
+- **Any direction counts.** A swing is any fast bat movement, whichever way
+  your arms go. If the stick blurs out of sight mid-swing, the game follows
+  your hands instead, so fast swings aren't lost.
+- **Your bat waits in the backlift**, raised and out of the way of the view
+  down the pitch. When you swing, the on-screen bat swings through in the
+  direction you swung, then goes back up for the next ball.
+- **Auto timing** (Settings, on by default): if you keep swinging early or
+  late, the game shifts its timing window to match you and your camera.
 - **Six meter:** every lofted hit shows its distance live. Sixes get a
   cinematic replay from behind the batter, and your longest six is saved.
 
@@ -161,6 +169,7 @@ src/
     config.js             layout, pace, timing constants
     game.js               match flow, contact, scoring, cameras, six replay
     contact.js            which swing met the ball, and its timing
+    batPose.js            on-screen bat: resting backlift, swing animation along your swing
     shots.js              swing → direction, height, power, shot name
     physics.js            delivery (lengths, bounce, swing, seam) and struck-ball flight
     outcome.js            field placings, catches, runs, boundaries

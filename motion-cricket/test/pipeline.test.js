@@ -120,3 +120,23 @@ test('holding the stick still gives no swings, even with tracking noise', () => 
   }
   assert.equal(input.detector.strokes.filter((s) => s.valid).length, 0);
 });
+
+test('a swing is still caught when the stick blurs away mid-swing (hands take over)', () => {
+  const input = calibrated();
+  let t = 1;
+  const at = (angle, gx, gy, stickAlpha = 1) => {
+    t += 1 / FPS;
+    feedFrame(input, t, { stickAngle: angle, grip: { x: gx, y: gy }, forearm: 150, forearm2: 125, stickAlpha, seed: Math.round(t * 1000) });
+  };
+  for (let i = 0; i < 10; i++) at(-130, 234, 130);
+  const down = 6;
+  for (let i = 1; i <= down; i++) {
+    const u = ease(i / down);
+    // The middle frames: the stick is a blur the tracker can't see.
+    at(-130 + 160 * u, 234 - 40 * u, 130 + 35 * u, i >= 2 && i <= 5 ? 0 : 1);
+  }
+  for (let i = 0; i < 10; i++) at(30, 194, 165);
+  const swings = input.detector.strokes.filter((s) => s.valid);
+  assert.ok(swings.length >= 1, 'swing detected through the blur');
+  assert.ok(swings[swings.length - 1].vy < 0, 'downward');
+});

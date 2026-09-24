@@ -30,6 +30,7 @@ const DEFAULTS = {
   ambientVolume: 55,
   chimes: true,
   easyContact: true,
+  autoTiming: true,
   showCam: true,
   name: 'YOU',
   number: '18',
