@@ -1,270 +1,383 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BOARD_RADIUS, FIELD_CENTER, STAND_RADIUS } from './config.js';
 import {
   SPONSORS,
   boardCanvas,
-  cloudCanvas,
-  crowdCanvas,
+  fasciaCanvas,
   floodlightCanvas,
   glowCanvas,
-  grassCanvas,
-  pitchCanvas,
+  makeCanvas,
+  ribbonCanvas,
   rng,
-  roofBannerCanvas,
+  seatsCanvas,
   toTexture,
 } from './textures.js';
 
-// World layout (metres): the striker's stumps are at the origin and the
-// bowler's stumps at z = -20.12. +X is to the right as the batter looks down
-// the pitch. The ground is centred on the middle of the pitch.
-export const PITCH_LENGTH = 20.12;
-export const FIELD_CENTER = new THREE.Vector3(0, 0, -PITCH_LENGTH / 2);
-export const BOUNDARY_RADIUS = 62;
-const BOARD_RADIUS = 64;
-const STAND_RADIUS = 72;
+// The bowl: boundary boards, two tiers of stands under a cantilever roof with
+// a green fascia, a grand pavilion with its own banner, floodlight towers
+// and sight screens.
+//
+// Angles `a` are measured around the middle of the ground: a = 0 is straight
+// down the pitch behind the bowler, +90° to the batter's right.
 
-export function buildStadium(scene, assets, { lowSpec = false } = {}) {
-  const root = new THREE.Group();
-  scene.add(root);
+const TAU = Math.PI * 2;
+const DEG = Math.PI / 180;
+export const PAVILION = { a: 40 * DEG, half: 24 * DEG };
 
-  // Sky: gradient dome, optional painted panorama, cartoon clouds.
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(900, 32, 16),
-    new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      uniforms: {
-        top: { value: new THREE.Color(0x1e6fe0) },
-        mid: { value: new THREE.Color(0x58a6f5) },
-        horizon: { value: new THREE.Color(0xcfe9ff) },
-      },
-      vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 horizon; varying vec3 vDir;
-        void main(){ float h = clamp(vDir.y, 0.0, 1.0);
-          vec3 c = mix(horizon, mid, smoothstep(0.0, 0.25, h));
-          c = mix(c, top, smoothstep(0.25, 0.9, h));
-          gl_FragColor = vec4(c, 1.0); }`,
-    }),
-  );
-  sky.renderOrder = -10;
-  root.add(sky);
+// Stand profile (distance from the middle of the ground, height).
+export const TIERS = {
+  lower: { r0: STAND_RADIUS + 0.5, y0: 2.2, r1: STAND_RADIUS + 16, y1: 9.8, rows: 14 },
+  upper: { r0: STAND_RADIUS + 18, y0: 12.4, r1: STAND_RADIUS + 31, y1: 19.2, rows: 12 },
+};
 
-  if (assets.sky) {
-    const tex = new THREE.Texture(assets.sky);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = THREE.MirroredRepeatWrapping;
-    tex.repeat.set(4, 1);
-    tex.needsUpdate = true;
-    const band = new THREE.Mesh(
-      new THREE.CylinderGeometry(850, 850, 700, 48, 1, true),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        transparent: true,
-        depthWrite: false,
-        uniforms: { map: { value: tex } },
-        vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-        fragmentShader: `uniform sampler2D map; varying vec2 vUv;
-          void main(){ vec4 c = texture2D(map, vec2(vUv.x * 4.0, vUv.y));
-            float a = 1.0 - smoothstep(0.8, 1.0, vUv.y);
-            gl_FragColor = vec4(c.rgb, a); }`,
-      }),
+export const at = (a, r, y = 0) =>
+  new THREE.Vector3(FIELD_CENTER.x + Math.sin(a) * r, y, FIELD_CENTER.z - Math.cos(a) * r);
+
+// Lathe/cylinder "phi" is measured from +z; our a = 0 points to -z.
+const phiOf = (a) => a + Math.PI;
+
+export function buildStadium(scene, assets, { quality }) {
+  const group = new THREE.Group();
+  scene.add(group);
+  const segs = quality.stadiumSegments;
+
+  const lathe = (pts, material, { from = -Math.PI, to = Math.PI } = {}) => {
+    const geo = new THREE.LatheGeometry(
+      pts.map(([r, y]) => new THREE.Vector2(r, y)),
+      Math.max(8, Math.round((segs * (to - from)) / TAU)),
+      phiOf(from),
+      to - from,
     );
-    band.position.y = 300;
-    band.renderOrder = -9;
-    root.add(band);
-  } else {
-    const r = rng(3);
-    const cloudTex = [1, 2, 3, 4, 5].map((s) => toTexture(cloudCanvas(s * 17)));
-    for (let i = 0; i < 16; i++) {
-      const mat = new THREE.SpriteMaterial({ map: cloudTex[i % cloudTex.length], depthWrite: false, fog: false });
-      const s = new THREE.Sprite(mat);
-      const ang = (i / 16) * Math.PI * 2 + r() * 0.3;
-      const dist = 520 + r() * 180;
-      const elev = 0.1 + r() * 0.42;
-      s.position.set(Math.sin(ang) * dist, Math.tan(elev) * dist + 30, -Math.cos(ang) * dist);
-      const w = 180 + r() * 220;
-      s.scale.set(w, w * 0.5, 1);
-      s.renderOrder = -8;
-      root.add(s);
-    }
-  }
-
-  // Outfield with mowing stripes computed from world position.
-  const grassTex = toTexture(grassCanvas(assets.grass), { repeat: [1, 1] });
-  const grassMat = new THREE.MeshStandardMaterial({ map: grassTex, roughness: 0.95, color: 0xffffff });
-  grassMat.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWorldP;')
-      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorldP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWorldP;')
-      .replace(
-        '#include <map_fragment>',
-        `vec4 sampledDiffuseColor = texture2D(map, vWorldP.xz / 3.2);
-         diffuseColor *= sampledDiffuseColor;
-         float stripe = step(0.5, fract(vWorldP.x / 7.0));
-         diffuseColor.rgb *= mix(0.86, 1.08, stripe);
-         float d = length(vWorldP.xz - vec2(0.0, ${FIELD_CENTER.z.toFixed(2)}));
-         diffuseColor.rgb *= mix(1.0, 0.9, smoothstep(${BOUNDARY_RADIUS}.0, ${BOARD_RADIUS}.0, d));`,
-      );
-  };
-  const field = new THREE.Mesh(new THREE.CircleGeometry(STAND_RADIUS + 2, 96), grassMat);
-  field.rotation.x = -Math.PI / 2;
-  field.position.copy(FIELD_CENTER);
-  field.receiveShadow = true;
-  root.add(field);
-
-  // Pitch strip.
-  const pitchTex = toTexture(pitchCanvas(assets.pitch));
-  const pitch = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.05, 24.4),
-    new THREE.MeshStandardMaterial({ map: pitchTex, roughness: 0.9 }),
-  );
-  pitch.rotation.x = -Math.PI / 2;
-  pitch.position.set(0, 0.012, FIELD_CENTER.z);
-  pitch.receiveShadow = true;
-  root.add(pitch);
-
-  // Boundary rope.
-  const rope = new THREE.Mesh(
-    new THREE.TorusGeometry(BOUNDARY_RADIUS, 0.07, 6, 180),
-    new THREE.MeshStandardMaterial({ color: 0xf4f1e8, roughness: 0.6 }),
-  );
-  rope.rotation.x = Math.PI / 2;
-  rope.position.set(0, 0.07, FIELD_CENTER.z);
-  root.add(rope);
-
-  // Advertising boards.
-  const boardMats = SPONSORS.map(
-    (s, i) => new THREE.MeshStandardMaterial({
-      map: toTexture(boardCanvas(s, assets[`sponsor${i + 1}`])),
-      roughness: 0.45,
-      emissive: 0xffffff,
-      emissiveIntensity: 0.12,
-    }),
-  );
-  boardMats.forEach((m) => (m.emissiveMap = m.map));
-  const boardGeo = new THREE.PlaneGeometry(6.2, 0.95);
-  const nBoards = Math.round((2 * Math.PI * BOARD_RADIUS) / 6.3);
-  for (let i = 0; i < nBoards; i++) {
-    const a = (i / nBoards) * Math.PI * 2;
-    const b = new THREE.Mesh(boardGeo, boardMats[i % boardMats.length]);
-    b.position.set(Math.sin(a) * BOARD_RADIUS, 0.5, FIELD_CENTER.z - Math.cos(a) * BOARD_RADIUS);
-    b.lookAt(FIELD_CENTER.x, 0.5, FIELD_CENTER.z);
-    root.add(b);
-  }
-
-  // Sight screens at both ends (white, so the red ball stands out).
-  const screenMat = new THREE.MeshStandardMaterial({ color: 0xf7f7f2, roughness: 0.8 });
-  for (const dir of [-1, 1]) {
-    const s = new THREE.Mesh(new THREE.BoxGeometry(18, 8, 0.4), screenMat);
-    s.position.set(0, 4, FIELD_CENTER.z + dir * (BOARD_RADIUS + 3));
-    s.castShadow = false;
-    root.add(s);
-  }
-
-  buildStands(root, assets, lowSpec);
-  buildStumps(root, 0);
-  buildStumps(root, -PITCH_LENGTH);
-  return root;
-}
-
-function buildStands(root, assets, lowSpec) {
-  const crowdTex = toTexture(crowdCanvas(assets.crowd), { repeat: [40, 1] });
-  const crowdMat = new THREE.MeshStandardMaterial({ map: crowdTex, roughness: 0.95, side: THREE.DoubleSide });
-  const upperTex = crowdTex.clone();
-  upperTex.repeat.set(52, 1);
-  upperTex.needsUpdate = true;
-  const upperMat = new THREE.MeshStandardMaterial({ map: upperTex, roughness: 0.95, side: THREE.DoubleSide });
-  const concrete = new THREE.MeshStandardMaterial({ color: 0xe6dccb, roughness: 0.9, side: THREE.DoubleSide });
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x137a64, roughness: 0.6, side: THREE.DoubleSide });
-  const segs = lowSpec ? 72 : 128;
-
-  const lathe = (pts, material) => {
-    const m = new THREE.Mesh(new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), segs), material);
-    m.position.copy(FIELD_CENTER);
-    root.add(m);
+    const m = new THREE.Mesh(geo, material);
+    m.position.set(FIELD_CENTER.x, 0, FIELD_CENTER.z);
+    group.add(m);
     return m;
   };
 
-  // Perimeter wall, lower tier, concourse, upper tier, roof. Kept fairly
-  // low so the big cartoon sky stays in view, like the reference art.
-  lathe([[STAND_RADIUS, 0], [STAND_RADIUS, 2.2]], concrete);
-  lathe([[STAND_RADIUS + 0.5, 2.2], [STAND_RADIUS + 16, 9.5]], crowdMat);
-  lathe([[STAND_RADIUS + 16, 9.5], [STAND_RADIUS + 16, 11.2], [STAND_RADIUS + 17.5, 11.2]], concrete);
-  lathe([[STAND_RADIUS + 17.5, 11.6], [STAND_RADIUS + 30, 19.5]], upperMat);
-  lathe([[STAND_RADIUS + 30, 19.5], [STAND_RADIUS + 31, 24]], concrete);
-  lathe([[STAND_RADIUS + 32, 24], [STAND_RADIUS + 19, 26.5]], roofMat);
+  const concrete = new THREE.MeshStandardMaterial({ color: 0xe8dfcd, roughness: 0.92, side: THREE.DoubleSide });
+  const wallPaint = new THREE.MeshStandardMaterial({ color: 0x0f6a5a, roughness: 0.8, side: THREE.DoubleSide });
+  const seatsTex = toTexture(seatsCanvas(), { repeat: [70, 2] });
+  const seats = new THREE.MeshStandardMaterial({ map: seatsTex, roughness: 0.9, side: THREE.DoubleSide });
+  const seatsUpper = seats.clone();
+  seatsUpper.map = seatsTex.clone();
+  seatsUpper.map.repeat.set(84, 2);
+  seatsUpper.map.needsUpdate = true;
+  const roofTop = new THREE.MeshStandardMaterial({ color: 0xdfe5ea, roughness: 0.6, side: THREE.DoubleSide });
+  const roofUnder = new THREE.MeshStandardMaterial({
+    map: toTexture(trussCanvas(), { repeat: [120, 1] }),
+    color: 0x9aa3ae,
+    roughness: 0.8,
+    side: THREE.DoubleSide,
+  });
 
-  // Roof fascia banner.
-  // Negative repeat: the banner is seen from inside the cylinder.
-  const bannerTex = toTexture(roofBannerCanvas(assets.roofBanner), { repeat: [-9, 1] });
-  const banner = new THREE.Mesh(
-    new THREE.CylinderGeometry(STAND_RADIUS + 19, STAND_RADIUS + 19, 2.6, segs, 1, true),
-    new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.5, side: THREE.BackSide, emissive: 0xffffff, emissiveMap: bannerTex, emissiveIntensity: 0.15 }),
-  );
-  banner.position.set(FIELD_CENTER.x, 25.4, FIELD_CENTER.z);
-  root.add(banner);
+  const L = TIERS.lower;
+  const U = TIERS.upper;
+  lathe([[STAND_RADIUS, 0], [STAND_RADIUS, L.y0]], wallPaint);
+  lathe([[STAND_RADIUS, L.y0], [STAND_RADIUS + 0.5, L.y0]], concrete);
+  lathe([[L.r0, L.y0], [L.r1, L.y1]], seats);
+  lathe([[L.r1, L.y1], [L.r1, L.y1 + 0.6], [U.r0, L.y1 + 0.6]], concrete);
+  lathe([[U.r0, L.y1 + 0.6], [U.r0, U.y0]], concrete);
+  lathe([[U.r0, U.y0], [U.r1, U.y1]], seatsUpper);
+  lathe([[U.r1, U.y1], [U.r1, 24.2], [U.r1 + 1, 24.2]], concrete);
+  // Cantilever roof over the upper tier (not over the pavilion).
+  const roofOpts = { from: PAVILION.a + PAVILION.half, to: PAVILION.a - PAVILION.half + TAU };
+  lathe([[U.r1 + 1, 24], [U.r0 - 1, 22.9]], roofUnder, roofOpts);
+  lathe([[U.r0 - 1, 23.7], [U.r1 + 1, 25.3]], roofTop, roofOpts);
 
-  // Structural columns between bays.
-  const colGeo = new THREE.BoxGeometry(0.6, 13, 0.6);
-  const colMat = new THREE.MeshStandardMaterial({ color: 0xdcd2c0, roughness: 0.8 });
-  const nCols = lowSpec ? 16 : 28;
-  const cols = new THREE.InstancedMesh(colGeo, colMat, nCols);
-  const m4 = new THREE.Matrix4();
-  for (let i = 0; i < nCols; i++) {
-    const a = (i / nCols) * Math.PI * 2;
-    const r = STAND_RADIUS + 20;
-    m4.makeTranslation(Math.sin(a) * r, 18.5, FIELD_CENTER.z - Math.cos(a) * r);
-    cols.setMatrixAt(i, m4);
+  // LED ribbon along the front of the upper tier.
+  const ribbon = toTexture(ribbonCanvas('MOTION CRICKET · BOLT COLA · SKYRIDE · KRAFT BATS · NOVA TILES · ZENTRA PAINTS'), {
+    repeat: [-6, 1],
+  });
+  const ribbonMat = new THREE.MeshStandardMaterial({
+    map: ribbon,
+    emissive: 0xffffff,
+    emissiveMap: ribbon,
+    emissiveIntensity: 0.55,
+    side: THREE.BackSide,
+  });
+  const ribbonMesh = new THREE.Mesh(new THREE.CylinderGeometry(L.r1 - 0.02, L.r1 - 0.02, 1.1, segs, 1, true), ribbonMat);
+  ribbonMesh.position.set(FIELD_CENTER.x, L.y1 + 0.9, FIELD_CENTER.z);
+  group.add(ribbonMesh);
+
+  // Roof fascia: green bands with lettering, in sections.
+  const texts = ['EAST STAND', 'SKYRIDE', 'MOTION CRICKET', 'BOLT COLA', 'WEST STAND', 'KRAFT BATS', 'NOVA TILES'];
+  const from = PAVILION.a + PAVILION.half;
+  const span = TAU - PAVILION.half * 2;
+  const n = texts.length;
+  for (let i = 0; i < n; i++) {
+    const a0 = from + (span * i) / n;
+    const tex = toTexture(fasciaCanvas(texts[i], assets.roofBanner && i === 2 ? assets.roofBanner : null));
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.repeat.x = -1;
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.55,
+      emissive: 0xffffff,
+      emissiveMap: tex,
+      emissiveIntensity: 0.12,
+      side: THREE.BackSide,
+    });
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(U.r0 - 1.05, U.r0 - 1.05, 2.8, Math.max(6, Math.round((segs * span) / n / TAU)), 1, true, phiOf(a0), span / n),
+      mat,
+    );
+    band.position.set(FIELD_CENTER.x, 23.4, FIELD_CENTER.z);
+    group.add(band);
   }
-  root.add(cols);
 
-  // Floodlight towers.
-  const panelTex = toTexture(floodlightCanvas());
-  const glowTex = toTexture(glowCanvas());
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0xb8bec8, roughness: 0.5, metalness: 0.3 });
-  const panelMat = new THREE.MeshBasicMaterial({ map: panelTex });
-  for (const a of [0.7, 2.45, 3.85, 5.6]) {
-    const r = STAND_RADIUS + 38;
-    const x = Math.sin(a) * r;
-    const z = FIELD_CENTER.z - Math.cos(a) * r;
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.3, 52, 10), poleMat);
-    pole.position.set(x, 26, z);
-    root.add(pole);
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(16, 8, 1), [poleMat, poleMat, poleMat, poleMat, panelMat, poleMat]);
-    panel.position.set(x, 54, z);
-    panel.lookAt(FIELD_CENTER.x, 10, FIELD_CENTER.z);
-    root.add(panel);
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, depthWrite: false, blending: THREE.AdditiveBlending }));
-    glow.position.set(x * 0.985, 54, FIELD_CENTER.z + (z - FIELD_CENTER.z) * 0.985);
-    glow.scale.set(40, 26, 1);
-    root.add(glow);
+  buildPavilion(group, assets);
+  buildBoards(group, assets);
+  buildSightScreens(group);
+  buildFloodlights(group, quality);
+  const flags = buildFlags(group);
+  return { group, flags };
+}
+
+function trussCanvas() {
+  const c = makeCanvas(64, 256);
+  const g = c.getContext('2d');
+  g.fillStyle = '#b7bec8';
+  g.fillRect(0, 0, 64, 256);
+  g.strokeStyle = '#7d8793';
+  g.lineWidth = 4;
+  g.beginPath();
+  g.moveTo(32, 0);
+  g.lineTo(32, 256);
+  g.stroke();
+  g.lineWidth = 2;
+  for (let y = 0; y < 256; y += 32) {
+    g.beginPath();
+    g.moveTo(0, y);
+    g.lineTo(64, y + 32);
+    g.stroke();
+  }
+  return c;
+}
+
+/** The members' pavilion: a taller, grander stand with the PREMIUM banner. */
+function buildPavilion(group, assets) {
+  const { a, half } = PAVILION;
+  const U = TIERS.upper;
+  const segs = 40;
+  const phi0 = phiOf(a - half);
+  const len = half * 2;
+  const cyl = (r, h, y, mat) => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, segs, 1, true, phi0, len), mat);
+    m.position.set(FIELD_CENTER.x, y, FIELD_CENTER.z);
+    group.add(m);
+    return m;
+  };
+  const cream = new THREE.MeshStandardMaterial({
+    map: toTexture(facadeCanvas(), { repeat: [-6, 1] }),
+    roughness: 0.85,
+    side: THREE.BackSide,
+  });
+  cyl(U.r1 + 0.6, 9, 23.4, cream);
+  // Banner: bigger than the regular fascia.
+  const tex = toTexture(fasciaCanvas('PREMIUM PAVILION', assets.roofBanner));
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.repeat.x = -1;
+  cyl(
+    U.r0 - 1.6,
+    4.2,
+    26.4,
+    new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.15, roughness: 0.5, side: THREE.BackSide }),
+  );
+  // Roof slab.
+  const roof = new THREE.Mesh(
+    new THREE.LatheGeometry(
+      [new THREE.Vector2(U.r0 - 1.6, 28.5), new THREE.Vector2(U.r1 + 1.2, 30.2), new THREE.Vector2(U.r1 + 1.2, 28.5), new THREE.Vector2(U.r0 - 1.6, 24.3)],
+      segs,
+      phi0,
+      len,
+    ),
+    new THREE.MeshStandardMaterial({ color: 0x0f7a60, roughness: 0.6, side: THREE.DoubleSide }),
+  );
+  roof.position.set(FIELD_CENTER.x, 0, FIELD_CENTER.z);
+  group.add(roof);
+  // Golden finials and pennants along the top.
+  const gold = new THREE.MeshStandardMaterial({ color: 0xf2c14e, roughness: 0.35, metalness: 0.6 });
+  const pennant = new THREE.MeshStandardMaterial({ color: 0xffc933, roughness: 0.6, side: THREE.DoubleSide });
+  const flagGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, -1.1, 0),
+    new THREE.Vector3(1.9, -0.55, 0),
+  ]);
+  flagGeo.computeVertexNormals();
+  for (let i = 0; i <= 6; i++) {
+    const aa = a - half + (i / 6) * half * 2;
+    const base = at(aa, U.r0 - 1.2, 29.2);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 3.2, 8), gold);
+    pole.position.copy(base).add(new THREE.Vector3(0, 1.6, 0));
+    group.add(pole);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), gold);
+    tip.position.copy(base).add(new THREE.Vector3(0, 3.3, 0));
+    group.add(tip);
+    const f = new THREE.Mesh(flagGeo, pennant);
+    f.position.copy(base).add(new THREE.Vector3(0, 3.1, 0));
+    f.rotation.y = -aa + Math.PI / 2;
+    f.userData.wave = i;
+    group.add(f);
   }
 }
 
-export function buildStumps(root, z) {
-  const group = new THREE.Group();
-  group.position.set(0, 0, z);
-  const wood = new THREE.MeshStandardMaterial({ color: 0xf1e3c2, roughness: 0.5 });
-  const stumpGeo = new THREE.CylinderGeometry(0.018, 0.018, 0.71, 10);
-  const stumps = [];
-  for (const x of [-0.108, 0, 0.108]) {
-    const s = new THREE.Mesh(stumpGeo, wood);
-    s.position.set(x, 0.355, 0);
-    s.castShadow = true;
+function facadeCanvas() {
+  const c = makeCanvas(512, 256);
+  const g = c.getContext('2d');
+  g.fillStyle = '#efe6d3';
+  g.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 4; i++) {
+    const x = 30 + i * 120;
+    g.fillStyle = '#35506e';
+    g.beginPath();
+    g.moveTo(x, 200);
+    g.lineTo(x, 110);
+    g.arc(x + 35, 110, 35, Math.PI, 0);
+    g.lineTo(x + 70, 200);
+    g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.25)';
+    g.fillRect(x + 33, 80, 4, 120);
+  }
+  g.fillStyle = '#d8ccb4';
+  g.fillRect(0, 214, 512, 10);
+  return c;
+}
+
+function buildBoards(group, assets) {
+  const n = Math.round((TAU * BOARD_RADIUS) / 6.6);
+  const w = (TAU * BOARD_RADIUS) / n;
+  const perSponsor = SPONSORS.map(() => []);
+  const plane = new THREE.PlaneGeometry(w * 1.004, 1.0);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU;
+    // Keep the sight screens clear.
+    if (Math.abs(Math.sin(a)) < 0.14) continue;
+    const p = at(a, BOARD_RADIUS, 0.5);
+    const g = plane.clone();
+    m.lookAt(p, new THREE.Vector3(FIELD_CENTER.x, 0.5, FIELD_CENTER.z), new THREE.Vector3(0, 1, 0));
+    // lookAt makes -z face the target; planes face +z.
+    m.multiply(new THREE.Matrix4().makeRotationY(Math.PI));
+    m.setPosition(p);
+    g.applyMatrix4(m);
+    perSponsor[i % SPONSORS.length].push(g);
+  }
+  SPONSORS.forEach((s, i) => {
+    if (!perSponsor[i].length) return;
+    const tex = toTexture(boardCanvas(s, assets[`sponsor${i + 1}`]));
+    const mesh = new THREE.Mesh(
+      mergeGeometries(perSponsor[i]),
+      new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.35, roughness: 0.5 }),
+    );
+    group.add(mesh);
+  });
+  // Backing frame.
+  const back = new THREE.Mesh(
+    new THREE.CylinderGeometry(BOARD_RADIUS + 0.12, BOARD_RADIUS + 0.12, 1.1, 180, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x1b2433, roughness: 0.8, side: THREE.DoubleSide }),
+  );
+  back.position.set(FIELD_CENTER.x, 0.55, FIELD_CENTER.z);
+  group.add(back);
+}
+
+function buildSightScreens(group) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xf7f7f1, roughness: 0.85 });
+  for (const a of [0, Math.PI]) {
+    const s = new THREE.Mesh(new THREE.BoxGeometry(22, 9, 0.5), mat);
+    s.position.copy(at(a, BOARD_RADIUS + 2.5, 4.5));
+    s.lookAt(FIELD_CENTER.x, 4.5, FIELD_CENTER.z);
+    s.castShadow = false;
     group.add(s);
-    stumps.push(s);
   }
-  const bailGeo = new THREE.CylinderGeometry(0.008, 0.008, 0.11, 6);
-  const bails = [];
-  for (const x of [-0.054, 0.054]) {
-    const b = new THREE.Mesh(bailGeo, wood);
-    b.rotation.z = Math.PI / 2;
-    b.position.set(x, 0.715, 0);
-    group.add(b);
-    bails.push(b);
+}
+
+function buildFloodlights(group, quality) {
+  const panelTex = toTexture(floodlightCanvas());
+  const glowTex = toTexture(glowCanvas());
+  const steel = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.45, metalness: 0.5 });
+  const panelMat = new THREE.MeshStandardMaterial({
+    map: panelTex,
+    emissive: 0xffffff,
+    emissiveMap: panelTex,
+    emissiveIntensity: quality.post ? 4 : 1.6,
+    roughness: 0.4,
+  });
+  for (const a of [42 * DEG, -42 * DEG, 138 * DEG, -138 * DEG]) {
+    const base = at(a, STAND_RADIUS + 38, 0);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.4, 60, 12), steel);
+    mast.position.copy(base).add(new THREE.Vector3(0, 30, 0));
+    group.add(mast);
+    const head = new THREE.Group();
+    head.position.copy(base).add(new THREE.Vector3(0, 61, 0));
+    head.lookAt(FIELD_CENTER.x, 8, FIELD_CENTER.z);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(17, 9, 1.2), steel);
+    head.add(frame);
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(16, 8), panelMat);
+    face.position.z = 0.62;
+    head.add(face);
+    group.add(head);
+    const glow = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: glowTex, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, opacity: 0.85 }),
+    );
+    glow.position.copy(head.position).lerp(new THREE.Vector3(FIELD_CENTER.x, 61, FIELD_CENTER.z), 0.02);
+    glow.scale.set(38, 26, 1);
+    group.add(glow);
   }
-  root.add(group);
-  group.userData = { stumps, bails };
-  return group;
+}
+
+/** Pennants along the roof line that flutter in the breeze. */
+function buildFlags(group) {
+  const U = TIERS.upper;
+  const r = rng(4);
+  const colors = [0xffc933, 0xff7a3d, 0x18a999, 0xffffff];
+  const flagGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, -0.9, 0),
+    new THREE.Vector3(1.6, -0.45, 0),
+  ]);
+  flagGeo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0.5]), 2));
+  flagGeo.computeVertexNormals();
+  const count = 70;
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, side: THREE.DoubleSide });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    mat.userData.shader = shader;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        float ph = instanceMatrix[3][0] * 0.3 + instanceMatrix[3][2] * 0.2;
+        transformed.z += sin(uTime * 5.0 + ph + uv.x * 3.0) * 0.35 * uv.x;`,
+      );
+  };
+  const flags = new THREE.InstancedMesh(flagGeo, mat, count);
+  const poles = [];
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const one = new THREE.Vector3(1, 1, 1);
+  const c = new THREE.Color();
+  let i = 0;
+  for (let k = 0; k < count; k++) {
+    const a = (k / count) * TAU;
+    if (Math.abs(((a - PAVILION.a + Math.PI) % TAU) - Math.PI) < PAVILION.half) continue;
+    const base = at(a, U.r0 + 1, 25.3);
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -a + Math.PI / 2 + (r() - 0.5) * 0.4);
+    m.compose(base.clone().add(new THREE.Vector3(0, 2.6, 0)), q, one);
+    flags.setMatrixAt(i, m);
+    flags.setColorAt(i, c.set(colors[k % colors.length]));
+    const pole = new THREE.CylinderGeometry(0.05, 0.05, 2.6, 5);
+    pole.translate(base.x, base.y + 1.3, base.z);
+    poles.push(pole);
+    i++;
+  }
+  flags.count = i;
+  group.add(flags);
+  group.add(new THREE.Mesh(mergeGeometries(poles), new THREE.MeshStandardMaterial({ color: 0xcfd4da, metalness: 0.4, roughness: 0.5 })));
+  return {
+    update(t) {
+      if (mat.userData.shader) mat.userData.shader.uniforms.uTime.value = t;
+    },
+  };
 }

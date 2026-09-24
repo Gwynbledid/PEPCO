@@ -1,7 +1,7 @@
 # Asset prompts (ChatGPT / Qwen)
 
-The game already runs with procedural art: stadium, crowd, grass, pitch,
-sponsor boards, clouds, characters and bat are all generated in code. Each
+The game already runs with procedural art: the stadium, the 3D crowd, grass,
+pitch, sponsor boards, clouds, characters and bat are all generated in code. Each
 image below **replaces** one of those procedural pieces, so the game gets
 closer to the reference art. Add them in any order; nothing breaks if an
 image is missing.
@@ -48,18 +48,7 @@ mirrored and repeated around a 360° dome.
 *If you add this, it replaces the gradient sky and cloud sprites. Pick a
 version whose clouds sit low in the frame.*
 
-## 2. Crowd: `crowd.jpg`, 1024×512 (2:1), seamless tile
-
-```
-A flat, front-facing orthographic texture of stadium seating rows packed with cheerful
-cartoon cricket fans. Exactly 10 horizontal rows of seats, small stylized people seen
-from the front, most wearing bright royal-blue jerseys, with some orange, yellow and
-white shirts, a few waving small tricolour flags and some with raised arms. Even
-lighting, no perspective, no sky, no roof, no railings or pillars at the edges.
-The texture must tile seamlessly left-to-right and top-to-bottom.
-```
-
-## 3. Outfield grass: `grass.jpg`, 1024×1024, seamless tile
+## 2. Outfield grass: `grass.jpg`, 1024×1024, seamless tile
 
 ```
 Top-down view of lush, perfectly mowed cricket outfield grass. Bright saturated green,
@@ -68,7 +57,7 @@ no shadows, no objects. Seamless tileable texture.
 ```
 *The game adds the mowing stripes itself.*
 
-## 4. Pitch surface: `pitch.jpg`, 1024×1024, seamless tile
+## 3. Pitch surface: `pitch.jpg`, 1024×1024, seamless tile
 
 ```
 Top-down view of a dry, hard-packed cricket pitch surface: light tan / sandy clay with
@@ -77,7 +66,7 @@ Stylized, even flat lighting, no crease lines, no shadows. Seamless tileable tex
 ```
 *The game paints the white crease lines on top.*
 
-## 5. Boundary boards: `sponsor_1.png` … `sponsor_6.png`, 1024×160 (~6.4:1)
+## 4. Boundary boards: `sponsor_1.png` … `sponsor_6.png`, 1024×160 (~6.4:1)
 
 Image tools can't make very wide images, so generate at **3:2** and crop the
 banner out. Use one prompt per board and change the name and colours:
@@ -99,17 +88,17 @@ bevel and soft highlight, a small simple icon beside the name. The banner is fla
 front-on, no perspective, no mockup, no frame, no people. Spell the text exactly.
 ```
 
-## 6. Roof banner: `roof_banner.png`, 2048×192 (~10.7:1)
+## 5. Roof banner: `roof_banner.png`, 2048×256 (8:1)
 
 Generate at 3:2 and crop.
 ```
-A long flat stadium roof fascia banner, very wide horizontal strip (about 10:1) centred on
+A long flat stadium roof fascia banner, very wide horizontal strip (about 8:1) centred on
 a plain white canvas. Teal-green (#0D6B73) background with bold cream-white rounded
 lettering reading "PREMIUM PAVILION", thin golden stripes along the top and bottom edges.
 Flat, front-on, no perspective, no mockup. Spell the text exactly.
 ```
 
-## 7. Bat sticker: `bat_sticker.png`, 256×640 (portrait), transparent PNG
+## 6. Bat sticker: `bat_sticker.png`, 256×640 (portrait), transparent PNG
 
 ```
 A cricket bat face sticker design on a transparent background, tall vertical layout.
@@ -118,7 +107,7 @@ vertically bottom-to-top, a navy-blue swoosh and a small gold star above it. Fla
 front-on, no bat, no shadow, transparent background.
 ```
 
-## 8. Game logo: `logo.png`, 1024×512, transparent PNG
+## 7. Game logo: `logo.png`, 1024×512, transparent PNG
 
 ```
 Game logo reading "MOTION CRICKET" on a transparent background. Chunky, rounded 3D cartoon

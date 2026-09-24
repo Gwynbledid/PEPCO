@@ -4,21 +4,36 @@ import '@fontsource/nunito/800.css';
 import '@fontsource/nunito/900.css';
 import './style.css';
 
-import { Sound } from './audio.js';
+import { ZenAudio } from './audio/zen.js';
 import { loadAssets } from './game/assets.js';
+import { TIMING } from './game/config.js';
 import { Game } from './game/game.js';
-import { BatInput, DEFAULT_CALIBRATION } from './tracking/batInput.js';
+import { pickQuality } from './game/world.js';
+import { BatInput, CALIBRATION_VERSION, defaultCalibration } from './tracking/batInput.js';
 import { startCamera } from './tracking/camera.js';
+import { FrameGrabber } from './tracking/frameGrabber.js';
 import { HandTracker } from './tracking/handTracker.js';
-import { MarkerTracker } from './tracking/markerTracker.js';
 import { Calibration } from './ui/calibration.js';
 import { Hud } from './ui/hud.js';
 import { drawTracking, fitCanvas } from './ui/overlay.js';
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- Settings (persisted per device) ----------
-const DEFAULTS = { input: 'hands', hand: 'R', pace: 'slow', aimAssist: true, showCam: true, sound: true };
+// ---------- Settings and records (per device) ----------
+const DEFAULTS = {
+  input: 'stick',
+  hand: 'R',
+  pace: 'slow',
+  latency: TIMING.latency * 1000,
+  quality: 'auto',
+  fxVolume: 80,
+  ambientVolume: 55,
+  chimes: true,
+  easyContact: true,
+  showCam: true,
+  name: 'YOU',
+  number: '18',
+};
 const store = {
   get(key, fallback) {
     try {
@@ -32,22 +47,27 @@ const store = {
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch {
-      /* private mode: settings just won't persist */
+      /* private mode: nothing persists */
     }
   },
 };
 const settings = { ...DEFAULTS, ...store.get('mc.settings', {}) };
-// v2: hand-mode swing speed is now measured from the hands, so old
-// calibrations no longer match and players are asked to recalibrate.
-const calibKey = (mode) => `mc.calib.v2.${mode}`;
+const records = { longestSix: 0, highScore: 0, ...store.get('mc.records', {}) };
+const calibKey = (mode) => `mc.calib.v${CALIBRATION_VERSION}.${mode}`;
+const savedCalib = (mode) => {
+  const c = store.get(calibKey(mode), null);
+  return c && c.version === CALIBRATION_VERSION ? c : null;
+};
 
 // ---------- Core objects ----------
-const audio = new Sound();
-audio.setEnabled(settings.sound);
+const audio = new ZenAudio();
+const applyAudio = () =>
+  audio.setLevels({ fx: settings.fxVolume / 100, ambient: settings.ambientVolume / 100, chimes: settings.chimes });
+applyAudio();
 const hud = new Hud();
 const input = new BatInput();
-const marker = new MarkerTracker();
 const hands = new HandTracker();
+const grabber = new FrameGrabber(448);
 const video = $('cam');
 let cameraReady = false;
 
@@ -57,70 +77,101 @@ if (assets.logo) {
   $('logoImg').hidden = false;
   $('logoText').hidden = true;
 }
-const game = new Game({ canvas: $('scene'), input, audio, hud, assets, settings });
-game.startAttract();
-
-const calibration = new Calibration({ input, marker, audio });
+const quality = pickQuality(settings.quality);
+const game = new Game({ canvas: $('scene'), input, audio, hud, assets, settings, quality });
+game.best = { ...records };
+game.onRecord = (key, value) => {
+  records[key] = value;
+  store.set('mc.records', records);
+  updateMenuLines();
+};
+const calibration = new Calibration({ input, audio });
+game.showMenu();
 
 // ---------- Screens ----------
 const SCREENS = ['menu', 'settings', 'help', 'calib', 'pause', 'loading'];
 let returnTo = 'menu';
-function show(id) {
-  for (const s of SCREENS) $(s).hidden = s !== id;
-}
-function hideScreens() {
-  for (const s of SCREENS) $(s).hidden = true;
-}
+const show = (id) => SCREENS.forEach((s) => ($(s).hidden = s !== id));
+const hideScreens = () => SCREENS.forEach((s) => ($(s).hidden = true));
 
-function updateModeLine() {
-  const names = { hands: 'Hand tracking', stick: 'Stick tracking', touch: 'Touch / mouse' };
-  const cal = settings.input !== 'touch' && store.get(calibKey(settings.input), null) ? ' · calibrated ✓' : '';
+function updateMenuLines() {
+  const names = { stick: 'Stick tracking', hands: 'Hand tracking', touch: 'Touch / mouse' };
+  const cal = settings.input !== 'touch' && savedCalib(settings.input) ? ' · calibrated ✓' : '';
   $('modeLine').textContent = `${names[settings.input]} · ${settings.hand === 'R' ? 'Right' : 'Left'}-handed · ${settings.pace} pace${cal}`;
+  const parts = [];
+  if (records.longestSix) parts.push(`Longest six ${records.longestSix} m`);
+  if (records.highScore) parts.push(`Best score ${records.highScore}`);
+  $('records').textContent = parts.join(' · ');
+  $('sbTeam').textContent = (settings.name || 'YOU').toUpperCase();
 }
-updateModeLine();
+updateMenuLines();
 
-// ---------- Loop ----------
+// ---------- Clock and loop ----------
 let mode = 'menu'; // menu | calib | play
 let paused = false;
 let pausedTotal = 0;
 let last = performance.now();
-let lastVideoTime = -1;
+const toGame = (t) => t - pausedTotal;
 
-function track(nowMs) {
-  if (!cameraReady || settings.input === 'touch') return;
-  if (video.readyState < 2 || video.currentTime === lastVideoTime) return;
-  lastVideoTime = video.currentTime;
-  const landmarks = hands.detect(video, nowMs);
-  const m = settings.input === 'stick' && marker.calibrated ? marker.track(video) : null;
-  input.updateFromCamera(nowMs / 1000, landmarks, m, video.videoWidth / video.videoHeight);
+/** One camera frame: hand landmarks, the stick, then the swing detector. */
+function onCameraFrame() {
+  if (!cameraReady || settings.input === 'touch' || (mode !== 'calib' && mode !== 'play')) return;
+  const nowMs = performance.now();
+  const landmarks = hands.detect(video, nowMs) || [];
+  const frame = grabber.grab(video);
+  if (!frame) return;
+  if (mode === 'calib' && calibration.learning) calibration.learnFrame(frame, landmarks);
+  else input.processCamera(nowMs / 1000, frame, landmarks);
 }
 
-let manual = false; // debug: step frames on a virtual clock (see window.__mc.step)
+let lastVideoTime = -1;
+function pollVideo() {
+  // Fallback for browsers without requestVideoFrameCallback.
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    onCameraFrame();
+  }
+}
+const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+function watchVideo() {
+  if (!hasRVFC) return;
+  const cb = () => {
+    onCameraFrame();
+    video.requestVideoFrameCallback(cb);
+  };
+  video.requestVideoFrameCallback(cb);
+}
+
+let manual = false; // test hook: step frames on a virtual clock
 function loop(nowMs) {
   if (!manual) frame(nowMs);
   requestAnimationFrame(loop);
 }
 
 function frame(nowMs, draw = true) {
-  const dt = Math.min(0.05, (nowMs - last) / 1000);
+  const dt = Math.min(0.05, Math.max(0, (nowMs - last) / 1000));
   last = nowMs;
-  track(nowMs);
-  if (settings.input === 'touch' && mode === 'play') input.updateFromPointer(nowMs / 1000);
-  if (mode === 'calib') calibration.update(dt, video);
-
+  if (!hasRVFC) pollVideo();
+  if (settings.input === 'touch' && mode === 'play') input.processPointer(nowMs / 1000);
+  if (mode === 'calib') calibration.update(dt);
   if (paused) pausedTotal += dt;
-  else game.update(dt, nowMs / 1000 - pausedTotal, (t) => t - pausedTotal);
-  if (draw) game.render();
-
-  if (mode === 'play' && settings.showCam && cameraReady && settings.input !== 'touch') {
-    const cv = $('camOverlay');
-    const { w, h } = fitCanvas(cv);
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
-    drawTracking(ctx, w, h, input.raw, { compact: true });
-  }
+  else game.update(dt, toGame(nowMs / 1000), toGame);
+  if (draw) game.render(dt);
+  if (mode === 'play') drawPreview();
 }
 requestAnimationFrame(loop);
+
+function drawPreview() {
+  const dot = $('trackDot');
+  const s = input.state;
+  dot.className = `track-dot ${settings.input === 'touch' ? 'good' : !s.tracked ? 'lost' : s.conf >= 0.55 ? 'good' : 'weak'}`;
+  if (!(settings.showCam && cameraReady && settings.input !== 'touch')) return;
+  const cv = $('camOverlay');
+  const { w, h } = fitCanvas(cv);
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  drawTracking(ctx, w, h, input.raw, { compact: true, mode: settings.input });
+}
 
 // ---------- Camera ----------
 async function ensureCamera() {
@@ -136,6 +187,7 @@ async function ensureCamera() {
     const ar = `${video.videoWidth} / ${video.videoHeight}`;
     $('calStage').style.aspectRatio = ar;
     $('camBox').style.aspectRatio = ar;
+    watchVideo();
     return true;
   } catch (err) {
     console.error(err);
@@ -143,21 +195,19 @@ async function ensureCamera() {
     $('loadingText').textContent = 'Camera unavailable';
     $('errorText').textContent = denied
       ? 'Camera permission was blocked. Allow camera access in your browser or app settings and try again.'
-      : `Couldn't start the camera or tracker (${err?.message || err}).`;
+      : `Couldn't start the camera or hand tracking (${err?.message || err}).`;
     $('loadingError').hidden = false;
     return false;
   }
 }
 
 function applyInputMode() {
-  input.setMode(settings.input);
+  input.mode = settings.input;
   if (settings.input === 'touch') {
-    input.setCalibration({ ...DEFAULT_CALIBRATION, refSpeed: 6, threshold: 2.2 });
+    input.setCalibration({ ...defaultCalibration('touch'), ref: 70 });
     return;
   }
-  const saved = store.get(calibKey(settings.input), null);
-  input.setCalibration(saved || DEFAULT_CALIBRATION);
-  if (settings.input === 'stick') marker.setTarget(saved?.marker || null);
+  input.setCalibration(savedCalib(settings.input) || defaultCalibration(settings.input));
 }
 
 // ---------- Flow ----------
@@ -167,15 +217,12 @@ async function play() {
   applyInputMode();
   if (settings.input !== 'touch') {
     if (!(await ensureCamera())) return;
-    if (!store.get(calibKey(settings.input), null)) {
-      startCalibration();
-      return;
-    }
+    if (!savedCalib(settings.input)) return startCalibration();
   }
-  beginPlay();
+  beginPlay(true);
 }
 
-function beginPlay() {
+function beginPlay(fresh) {
   mode = 'play';
   paused = false;
   hideScreens();
@@ -183,21 +230,19 @@ function beginPlay() {
   box.hidden = !(settings.showCam && settings.input !== 'touch');
   box.insertBefore(video, box.firstChild);
   game.applySettings(settings);
-  // Coming back from a mid-innings recalibration keeps the score.
-  if (game.mode !== 'play') game.startMatch();
-  else game.nextBall(true);
+  if (fresh || game.mode !== 'play') game.startInnings();
+  else game.resume();
   requestWakeLock();
 }
 
 async function startCalibration() {
   audio.unlock();
   if (settings.input === 'touch') {
-    settings.input = 'hands';
+    settings.input = 'stick';
     saveSettings();
   }
-  input.setMode(settings.input);
-  input.setCalibration(DEFAULT_CALIBRATION);
-  if (settings.input === 'stick') marker.setTarget(null);
+  input.mode = settings.input;
+  input.setCalibration(defaultCalibration(settings.input));
   if (!(await ensureCamera())) return;
   $('calStage').insertBefore(video, $('calStage').firstChild);
   returnTo = mode === 'play' ? 'play' : 'menu';
@@ -209,16 +254,16 @@ async function startCalibration() {
 
 function finishCalibration() {
   store.set(calibKey(settings.input), calibration.calib);
-  updateModeLine();
+  updateMenuLines();
   applyInputMode();
-  beginPlay();
+  beginPlay(returnTo !== 'play');
 }
 
 function toMenu() {
   mode = 'menu';
   paused = false;
-  game.startAttract();
-  updateModeLine();
+  game.showMenu();
+  updateMenuLines();
   show('menu');
 }
 
@@ -236,41 +281,53 @@ function resume() {
 
 // ---------- Settings UI ----------
 function saveSettings() {
+  settings.name = String(settings.name || 'YOU').toUpperCase().slice(0, 12);
+  settings.number = String(settings.number || '18').replace(/[^0-9]/g, '').slice(0, 3) || '18';
   store.set('mc.settings', settings);
-  audio.setEnabled(settings.sound);
+  applyAudio();
   game.applySettings(settings);
   renderSettings();
-  updateModeLine();
+  updateMenuLines();
 }
 
 function renderSettings() {
   document.querySelectorAll('.seg').forEach((seg) => {
-    const key = seg.dataset.key;
-    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === settings[key]));
+    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === String(settings[seg.dataset.key])));
   });
-  document.querySelectorAll('input[type=checkbox][data-key]').forEach((cb) => {
-    cb.checked = !!settings[cb.dataset.key];
+  document.querySelectorAll('input[data-key]').forEach((el) => {
+    const v = settings[el.dataset.key];
+    if (el.type === 'checkbox') el.checked = !!v;
+    else if (document.activeElement !== el) el.value = v;
   });
+  $('latencyVal').textContent = `${settings.latency} ms`;
   $('inputNote').textContent = {
-    hands: 'The camera tracks your hands. Hold them together like a bat grip.',
-    stick: 'Hold a stick with a brightly coloured tip (tape, a sock or a ball). This gives the most precise bat angle.',
-    touch: 'Swipe or move the mouse to swing. Good for trying the game without a camera.',
+    stick: 'Hold any stick like a bat — a rolled newspaper, a broom handle, a toy bat. The camera finds the stick itself.',
+    hands: 'No stick: hold your hands together like a grip. The bat angle is estimated from your fists.',
+    touch: 'Swipe or move the mouse to swing. For trying the game without a camera.',
   }[settings.input];
+  $('qualityNote').textContent =
+    settings.quality === 'auto' ? `Auto picked "${quality.name}" for this device.` : 'Graphics changes apply after the game reloads.';
 }
 
+let qualityChanged = false;
 document.querySelectorAll('.seg').forEach((seg) => {
   seg.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     audio.unlock();
     audio.click();
-    settings[seg.dataset.key] = b.dataset.v;
+    const key = seg.dataset.key;
+    if (key === 'quality' && settings.quality !== b.dataset.v) qualityChanged = true;
+    settings[key] = b.dataset.v;
     saveSettings();
   });
 });
-document.querySelectorAll('input[type=checkbox][data-key]').forEach((cb) => {
-  cb.addEventListener('change', () => {
-    settings[cb.dataset.key] = cb.checked;
+document.querySelectorAll('input[data-key]').forEach((el) => {
+  const key = el.dataset.key;
+  el.addEventListener(el.type === 'text' ? 'change' : 'input', () => {
+    if (el.type === 'checkbox') settings[key] = el.checked;
+    else if (el.type === 'range') settings[key] = Number(el.value);
+    else settings[key] = el.value;
     saveSettings();
   });
 });
@@ -292,32 +349,44 @@ on('settingsBtn', () => {
 on('helpBtn', () => show('help'));
 on('helpDone', () => show('menu'));
 on('settingsDone', async () => {
+  if (qualityChanged) {
+    location.reload();
+    return;
+  }
   if (returnTo !== 'pause') return show('menu');
   // Switching control scheme mid-innings may need the camera or a calibration.
   applyInputMode();
   $('camBox').hidden = !(settings.showCam && settings.input !== 'touch');
   if (settings.input !== 'touch') {
     if (!(await ensureCamera())) return;
-    if (!store.get(calibKey(settings.input), null)) return startCalibration();
+    if (!savedCalib(settings.input)) return startCalibration();
   }
   show('pause');
 });
-on('calBack', () => {
-  if (returnTo === 'play') {
-    beginPlay();
-  } else toMenu();
+on('resetCalBtn', () => {
+  for (const m of ['stick', 'hands']) {
+    try {
+      localStorage.removeItem(calibKey(m));
+    } catch {
+      /* ignore */
+    }
+  }
+  updateMenuLines();
+  hud.toast('Calibration cleared');
 });
+on('calBack', () => (returnTo === 'play' ? beginPlay(false) : toMenu()));
 on('calSkip', () => {
-  calibration.calib = { ...DEFAULT_CALIBRATION };
+  calibration.calib = { ...defaultCalibration(settings.input), stick: input.stick.model };
   finishCalibration();
 });
 on('calRedo', () => calibration.start(settings.input));
 on('calPlay', finishCalibration);
+on('calRetryStick', () => calibration.retryStick());
+on('calAcceptStick', () => calibration.acceptStick());
 on('pauseBtn', pause);
 on('resumeBtn', resume);
 on('recalBtn', () => {
   paused = false;
-  mode = 'play';
   startCalibration();
 });
 on('pauseSettingsBtn', () => {
@@ -357,12 +426,16 @@ window.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) pause();
+  if (document.hidden) {
+    pause();
+    audio.suspend();
+  } else {
+    audio.resume();
+  }
 });
 
 function updateRotateTip() {
-  const portrait = window.innerHeight > window.innerWidth;
-  $('rotateTip').classList.toggle('show', portrait && mode === 'play');
+  $('rotateTip').classList.toggle('show', window.innerHeight > window.innerWidth && mode === 'play');
 }
 
 function requestFullscreen() {
@@ -386,11 +459,12 @@ async function requestWakeLock() {
 }
 
 // Test hooks: inspect state, or drive the game frame by frame on a virtual
-// clock (useful on slow machines and for automated tests).
+// clock (for slow machines and automated tests).
 window.__mc = {
   game,
   input,
   settings,
+  calibration,
   step(frames = 1, { dtMs = 1000 / 60, render = true } = {}) {
     manual = true;
     for (let i = 0; i < frames; i++) frame(last + dtMs, render && i === frames - 1);

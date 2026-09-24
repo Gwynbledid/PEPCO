@@ -1,121 +1,173 @@
-import * as THREE from 'three';
-import { BOUNDARY_RADIUS, FIELD_CENTER } from './stadium.js';
+import { BALL_RADIUS, BOUNDARY_RADIUS, CONTACT_Z, FIELD_CENTER, G, PACES, standHeight } from './config.js';
 
-export const G = 9.81;
-export const BALL_RADIUS = 0.036;
-// The plane (z) where the bat meets the ball: a front-foot contact point
-// about a metre in front of the popping crease.
-export const HIT_PLANE_Z = -2.4;
+// Plain {x, y, z} vectors, so the physics runs (and is tested) without a renderer.
 const DT = 1 / 120;
+const DRAG = 0.0055; // quadratic air drag, 1/m (a leather ball loses ~25% of its range)
 
-const PACES = {
-  slow: [22, 26], // ~80-95 km/h: best while learning, it hides camera lag
-  medium: [27, 32], // ~97-115 km/h
-  fast: [33, 38], // ~120-137 km/h
+// Where the ball pitches (metres in front of the batter's stumps) for each
+// length, and how often each is bowled. Real lengths: a good-length ball
+// climbs to thigh/waist height by the time it reaches the bat.
+export const LENGTHS = {
+  yorker: { p: 0.06, z: [-1.9, -2.4] },
+  full: { p: 0.2, z: [-3.9, -4.8] },
+  good: { p: 0.5, z: [-6.0, -7.3] },
+  short: { p: 0.18, z: [-7.8, -9.0] },
+  bouncer: { p: 0.06, z: [-9.6, -10.8] },
 };
 
-/** Random delivery plan: speed, line, length and seam movement. */
-export function planDelivery(pace, rand = Math.random) {
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** A random delivery: speed, line, length, swing and seam. */
+export function planDelivery(pace, hand = 1, rand = Math.random) {
   const [lo, hi] = PACES[pace] || PACES.medium;
-  const r = rand();
-  // Mostly good length, some full, some short.
-  const length = r < 0.18 ? 'full' : r < 0.78 ? 'good' : r < 0.93 ? 'short' : 'yorker';
-  // Where it pitches, in metres in front of the batter's stumps. Real
-  // lengths, so the ball climbs to thigh/waist height by the time it
-  // reaches the bat (short balls to chest height).
-  const bounceZ = {
-    yorker: -0.8 - rand() * 0.5,
-    full: -3.6 - rand() * 1.4,
-    good: -5.8 - rand() * 1.8,
-    short: -8.6 - rand() * 1.8,
-  }[length];
-  return {
-    speed: lo + rand() * (hi - lo),
-    lineX: -0.25 + rand() * 0.6, // where it would pass the stumps (x)
-    bounceZ,
-    seam: (rand() - 0.5) * 0.9, // sideways m/s gained off the pitch
-    length,
-  };
-}
-
-/**
- * Builds the path of a delivery from the release point. Returns a sampler
- * plus the time it crosses the hit plane and whether it would hit the stumps.
- */
-export function buildDelivery(release, plan) {
-  const target = new THREE.Vector3(plan.lineX, 0, 0);
-  const flat = new THREE.Vector3(target.x - release.x, 0, target.z - release.z).normalize();
-  const toBounce = (plan.bounceZ - release.z) / flat.z;
-  const bounce = new THREE.Vector3(release.x + flat.x * toBounce, BALL_RADIUS, plan.bounceZ);
-  const vh = plan.speed;
-  const tb = toBounce / vh;
-  const vy0 = (BALL_RADIUS - release.y + 0.5 * G * tb * tb) / tb;
-  const v0 = new THREE.Vector3(flat.x * vh, vy0, flat.z * vh);
-  const vyImpact = vy0 - G * tb;
-  // Off the pitch: loses some pace, bounces up, and moves off the seam.
-  const e = 0.7;
-  const v1 = new THREE.Vector3(v0.x * 0.9 + plan.seam, -vyImpact * e, v0.z * 0.9);
-
-  const posAt = (t, out = new THREE.Vector3()) => {
-    if (t <= tb) {
-      return out.set(release.x + v0.x * t, release.y + v0.y * t - 0.5 * G * t * t, release.z + v0.z * t);
-    }
-    const u = t - tb;
-    const y = Math.max(BALL_RADIUS, bounce.y + v1.y * u - 0.5 * G * u * u);
-    return out.set(bounce.x + v1.x * u, y, bounce.z + v1.z * u);
-  };
-  const velAt = (t, out = new THREE.Vector3()) => {
-    if (t <= tb) return out.set(v0.x, v0.y - G * t, v0.z);
-    return out.set(v1.x, v1.y - G * (t - tb), v1.z);
-  };
-
-  const timeAtZ = (z) => {
-    if (z <= bounce.z) return (z - release.z) / v0.z;
-    return tb + (z - bounce.z) / v1.z;
-  };
-  const tHit = timeAtZ(HIT_PLANE_Z);
-  const tStumps = timeAtZ(0);
-  const atStumps = posAt(tStumps);
-  const hitsStumps = Math.abs(atStumps.x) < 0.108 + 0.018 + BALL_RADIUS && atStumps.y < 0.72 + BALL_RADIUS;
-  return { posAt, velAt, tHit, tStumps, tBounce: tb, bounce, hitsStumps, atHit: posAt(tHit), plan };
-}
-
-/**
- * Simulates a struck ball: flight, bounces and roll, stopping at the rope.
- * Returns samples every DT seconds with the moment it crossed the rope.
- */
-export function simulateShot(origin, velocity) {
-  const p = origin.clone();
-  const v = velocity.clone();
-  const samples = [];
-  let bounced = false;
-  let firstBounce = null;
-  let boundary = null;
-  let t = 0;
-  let rolling = false;
-  for (let i = 0; i < 12 / DT; i++) {
-    samples.push({ t, p: p.clone(), bounced });
-    const dx = p.x - FIELD_CENTER.x;
-    const dz = p.z - FIELD_CENTER.z;
-    if (Math.hypot(dx, dz) >= BOUNDARY_RADIUS) {
-      boundary = { t, six: !bounced, p: p.clone() };
+  let r = rand();
+  let length = 'good';
+  for (const [name, { p }] of Object.entries(LENGTHS)) {
+    if (r < p) {
+      length = name;
       break;
     }
+    r -= p;
+  }
+  const [z0, z1] = LENGTHS[length].z;
+  return {
+    speed: lerp(lo, hi, rand()),
+    length,
+    bounceZ: lerp(z0, z1, rand()),
+    // Line where it would pass the stumps: mostly at the stumps or just outside off.
+    lineX: hand * lerp(-0.18, 0.32, rand()),
+    swing: (rand() - 0.5) * 1.2, // sideways m/s² in the air
+    seam: (rand() - 0.5) * 0.9, // sideways m/s gained off the pitch
+    bounce: lerp(0.66, 0.74, rand()),
+  };
+}
+
+/**
+ * Flight of a delivery from the release point, as functions of time since
+ * release, plus the key moments: when it pitches, reaches the bat and
+ * reaches the stumps.
+ */
+export function buildDelivery(release, plan) {
+  const vh = plan.speed;
+  // Aim straight at the line, ignoring swing (swing and seam then move it).
+  const dirX = plan.lineX - release.x;
+  const dirZ = -release.z;
+  const l = Math.hypot(dirX, dirZ);
+  const fx = dirX / l;
+  const fz = dirZ / l;
+  const toBounce = (plan.bounceZ - release.z) / fz;
+  const tb = toBounce / vh;
+  const vy0 = (BALL_RADIUS - release.y + 0.5 * G * tb * tb) / tb;
+  const a = plan.swing;
+  const v0 = { x: fx * vh, y: vy0, z: fz * vh };
+  const bounce = { x: release.x + v0.x * tb + 0.5 * a * tb * tb, y: BALL_RADIUS, z: plan.bounceZ };
+  const vyImpact = vy0 - G * tb;
+  const v1 = {
+    x: (v0.x + a * tb) * 0.9 + plan.seam,
+    y: -vyImpact * plan.bounce,
+    z: v0.z * 0.88,
+  };
+
+  const posAt = (t, out = { x: 0, y: 0, z: 0 }) => {
+    if (t <= tb) {
+      out.x = release.x + v0.x * t + 0.5 * a * t * t;
+      out.y = release.y + v0.y * t - 0.5 * G * t * t;
+      out.z = release.z + v0.z * t;
+      return out;
+    }
+    const u = t - tb;
+    out.x = bounce.x + v1.x * u;
+    out.y = Math.max(BALL_RADIUS, bounce.y + v1.y * u - 0.5 * G * u * u);
+    out.z = bounce.z + v1.z * u;
+    return out;
+  };
+  const velAt = (t, out = { x: 0, y: 0, z: 0 }) => {
+    if (t <= tb) {
+      out.x = v0.x + a * t;
+      out.y = v0.y - G * t;
+      out.z = v0.z;
+    } else {
+      out.x = v1.x;
+      out.y = v1.y - G * (t - tb);
+      out.z = v1.z;
+    }
+    return out;
+  };
+  const timeAtZ = (z) => (z <= bounce.z ? (z - release.z) / v0.z : tb + (z - bounce.z) / v1.z);
+
+  const tContact = timeAtZ(CONTACT_Z);
+  const tStumps = timeAtZ(0);
+  const atStumps = posAt(tStumps);
+  const hitsStumps = Math.abs(atStumps.x) < 0.114 + BALL_RADIUS && atStumps.y < 0.71 + BALL_RADIUS;
+  return {
+    plan,
+    release: { ...release },
+    posAt,
+    velAt,
+    tBounce: tb,
+    bounce,
+    tContact,
+    tStumps,
+    atContact: posAt(tContact),
+    atStumps,
+    hitsStumps,
+  };
+}
+
+/** Launch velocity from a shot direction. Azimuth: 0 = straight back past the bowler, + = to +x. */
+export function launchVelocity(azimuthDeg, elevationDeg, speed) {
+  const az = (azimuthDeg * Math.PI) / 180;
+  const el = (elevationDeg * Math.PI) / 180;
+  return {
+    x: Math.sin(az) * Math.cos(el) * speed,
+    y: Math.sin(el) * speed,
+    z: -Math.cos(az) * Math.cos(el) * speed,
+  };
+}
+
+const distFromCenter = (p) => Math.hypot(p.x - FIELD_CENTER.x, p.z - FIELD_CENTER.z);
+
+/**
+ * Flight of a struck ball: through the air (with drag), bouncing and
+ * rolling, until it stops, crosses the rope, or (a six) lands in the crowd.
+ * Samples are every 1/120 s.
+ */
+export function simulateShot(origin, velocity) {
+  const p = { ...origin };
+  const v = { ...velocity };
+  const samples = [];
+  let bounced = false;
+  let rolling = false;
+  let boundary = null;
+  let firstBounce = null;
+  let t = 0;
+  for (let i = 0; i < 14 / DT; i++) {
+    samples.push({ t, x: p.x, y: p.y, z: p.z, bounced });
+    const r = distFromCenter(p);
+    if (!boundary && r >= BOUNDARY_RADIUS) {
+      boundary = { t, six: !bounced, x: p.x, y: p.y, z: p.z };
+      if (bounced) break; // a four: it's in the rope
+    }
+    // A six keeps flying until it lands in the stands.
+    if (boundary && boundary.six && p.y <= Math.max(BALL_RADIUS, standHeight(r))) break;
     if (rolling) {
       const sp = Math.hypot(v.x, v.z);
-      const ns = Math.max(0, sp - 2.8 * DT); // rolling friction on a fast outfield
-      if (ns < 0.3) break;
+      const ns = sp - 2.6 * DT; // a fast outfield
+      if (ns < 0.25) break;
       v.x *= ns / sp;
       v.z *= ns / sp;
     } else {
-      v.y -= G * DT;
-      // Light air drag keeps the big hits believable.
-      v.multiplyScalar(1 - 0.012 * DT * v.length() * 0.1);
+      const sp = Math.hypot(v.x, v.y, v.z);
+      v.x -= DRAG * sp * v.x * DT;
+      v.y -= (G + DRAG * sp * v.y) * DT;
+      v.z -= DRAG * sp * v.z * DT;
     }
-    p.addScaledVector(v, DT);
-    if (!rolling && p.y <= BALL_RADIUS) {
+    p.x += v.x * DT;
+    p.y += v.y * DT;
+    p.z += v.z * DT;
+    if (!rolling && p.y <= BALL_RADIUS && !(boundary && boundary.six)) {
       p.y = BALL_RADIUS;
-      if (!bounced) firstBounce = p.clone();
+      if (!bounced) firstBounce = { x: p.x, z: p.z, t };
       bounced = true;
       v.y = -v.y * 0.42;
       v.x *= 0.85;
@@ -128,15 +180,61 @@ export function simulateShot(origin, velocity) {
     t += DT;
   }
   const last = samples[samples.length - 1];
-  return { samples, boundary, firstBounce, dt: DT, duration: last.t, end: last.p };
+  return {
+    samples,
+    dt: DT,
+    duration: last.t,
+    boundary,
+    firstBounce,
+    end: { x: last.x, y: last.y, z: last.z },
+    carry: carryDistance(origin, velocity),
+  };
 }
 
-/** Linear interpolation into a shot's samples. */
-export function shotPosAt(shot, t, out = new THREE.Vector3()) {
+/**
+ * How far the ball would carry on the full (to ground level) from where it
+ * was hit: the distance shown on the six meter.
+ */
+export function carryDistance(origin, velocity) {
+  const p = { ...origin };
+  const v = { ...velocity };
+  for (let i = 0; i < 12 / DT; i++) {
+    const sp = Math.hypot(v.x, v.y, v.z);
+    v.x -= DRAG * sp * v.x * DT;
+    v.y -= (G + DRAG * sp * v.y) * DT;
+    v.z -= DRAG * sp * v.z * DT;
+    p.x += v.x * DT;
+    p.y += v.y * DT;
+    p.z += v.z * DT;
+    if (p.y <= 0 && v.y < 0) break;
+  }
+  return Math.hypot(p.x - origin.x, p.z - origin.z);
+}
+
+/** Position along a struck ball's flight at time t. */
+export function shotPos(shot, t, out = { x: 0, y: 0, z: 0 }) {
   const s = shot.samples;
   const f = t / shot.dt;
   const i = Math.floor(f);
-  if (i >= s.length - 1) return out.copy(s[s.length - 1].p);
-  if (i < 0) return out.copy(s[0].p);
-  return out.copy(s[i].p).lerp(s[i + 1].p, f - i);
+  if (i >= s.length - 1) {
+    const e = s[s.length - 1];
+    out.x = e.x;
+    out.y = e.y;
+    out.z = e.z;
+    return out;
+  }
+  const a = s[Math.max(0, i)];
+  const b = s[Math.max(0, i) + 1];
+  const k = Math.max(0, f - i);
+  out.x = a.x + (b.x - a.x) * k;
+  out.y = a.y + (b.y - a.y) * k;
+  out.z = a.z + (b.z - a.z) * k;
+  return out;
+}
+
+/** Horizontal distance travelled from the start of the shot at time t. */
+export function shotDistance(shot, t) {
+  const p = shotPos(shot, t);
+  const o = shot.samples[0];
+  return Math.hypot(p.x - o.x, p.z - o.z);
 }

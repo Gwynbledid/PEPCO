@@ -2,7 +2,6 @@
 // replace the procedural versions. See ASSET_PROMPTS.md for how to make them.
 export const ASSET_FILES = {
   sky: 'sky.jpg',
-  crowd: 'crowd.jpg',
   grass: 'grass.jpg',
   pitch: 'pitch.jpg',
   roofBanner: 'roof_banner.png',

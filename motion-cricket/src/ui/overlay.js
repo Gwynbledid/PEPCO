@@ -14,13 +14,16 @@ export function fitCanvas(canvas) {
   return { w, h, dpr };
 }
 
-/** Draws the tracked hands, grip, stick tip and bat line over the mirrored camera feed. */
-export function drawTracking(ctx, w, h, raw, { compact = false } = {}) {
+/**
+ * Draws what the tracker sees over the mirrored camera image: the hands
+ * (faint), and the stick it found, green when it's sure of it.
+ */
+export function drawTracking(ctx, w, h, raw, { compact = false, mode = 'stick' } = {}) {
   const X = (p) => p.x * w;
   const Y = (p) => p.y * h;
   const lw = compact ? 1.5 : 3;
   for (const lm of raw.hands) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
     ctx.lineWidth = lw;
     ctx.beginPath();
     for (const { start, end } of CONNECTIONS) {
@@ -28,45 +31,38 @@ export function drawTracking(ctx, w, h, raw, { compact = false } = {}) {
       ctx.lineTo(X(lm[end]), Y(lm[end]));
     }
     ctx.stroke();
-    ctx.fillStyle = '#18a999';
+    ctx.fillStyle = 'rgba(24,169,153,0.8)';
     for (const p of lm) {
       ctx.beginPath();
-      ctx.arc(X(p), Y(p), lw * 1.2, 0, Math.PI * 2);
+      ctx.arc(X(p), Y(p), lw, 0, Math.PI * 2);
       ctx.fill();
     }
   }
-  if (raw.grip) {
-    const gx = X(raw.grip);
-    const gy = Y(raw.grip);
-    let ex;
-    let ey;
-    if (raw.tip) {
-      ex = X(raw.tip);
-      ey = Y(raw.tip);
-    } else {
-      // raw.dir is aspect-corrected (x scaled by w/h), so scaling both
-      // components by the canvas height gives pixels.
-      const len = h * 0.45;
-      ex = gx + raw.dir[0] * len;
-      ey = gy + raw.dir[1] * len;
-    }
-    ctx.strokeStyle = '#ffd23f';
+  if (raw.grip && raw.tip) {
+    const sure = raw.conf >= 0.55;
+    const color = mode !== 'stick' ? '#ffd23f' : raw.predicted ? '#9aa6b8' : sure ? '#3ee08f' : '#ffd23f';
     ctx.lineCap = 'round';
-    ctx.lineWidth = compact ? 5 : 12;
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = (compact ? 6 : 14) + 3;
     ctx.beginPath();
-    ctx.moveTo(gx, gy);
-    ctx.lineTo(ex, ey);
+    ctx.moveTo(X(raw.grip), Y(raw.grip));
+    ctx.lineTo(X(raw.tip), Y(raw.tip));
     ctx.stroke();
-    ctx.fillStyle = '#ff6b35';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = compact ? 6 : 14;
     ctx.beginPath();
-    ctx.arc(gx, gy, compact ? 4 : 9, 0, Math.PI * 2);
+    ctx.moveTo(X(raw.grip), Y(raw.grip));
+    ctx.lineTo(X(raw.tip), Y(raw.tip));
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(X(raw.tip), Y(raw.tip), compact ? 4 : 9, 0, Math.PI * 2);
     ctx.fill();
   }
-  if (raw.tip) {
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = lw;
+  if (raw.grip) {
+    ctx.fillStyle = '#ff8a4c';
     ctx.beginPath();
-    ctx.arc(X(raw.tip), Y(raw.tip), compact ? 6 : 14, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(X(raw.grip), Y(raw.grip), compact ? 4 : 8, 0, Math.PI * 2);
+    ctx.fill();
   }
 }

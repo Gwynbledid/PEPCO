@@ -1,290 +1,219 @@
 import { OneEuro } from './filters.js';
+import { analyzeHand, batDirectionFromHands } from './handGeometry.js';
+import { StickTracker } from './stickTracker.js';
+import { STROKE_PROFILES, StrokeDetector } from './strokeDetector.js';
 
-// Palm centre = mean of the wrist and the four finger-base knuckles.
-const PALM = [0, 5, 9, 13, 17];
-const INDEX_MCP = 5;
-const PINKY_MCP = 17;
-// Distance from the grip to the "sweet spot" of the bat, in calibrated units.
-const BAT_REACH = 0.9;
-const HISTORY_SECONDS = 1.5;
-// Hands travel less than the bat head during a swing; this scales hand
-// speed up to roughly bat-head speed.
-const GRIP_GAIN = 1.6;
+// Combines hand tracking, the stick tracker and the stroke detector into one
+// bat for the game.
+//
+//  - Stick mode (default): the bat IS the stick, found in the image.
+//  - Hands mode: no stick; the bat direction is inferred from the fists.
+//  - Touch mode: the bat follows a finger or the mouse.
+//
+// Coordinates handed to the game are mirrored like the camera preview (move
+// right → bat moves right). "Calibrated" grip: stance = (0, 0), a
+// comfortable reach to either side = ±1, backlift = +1 (up).
 
-export const DEFAULT_CALIBRATION = {
-  stance: { x: 0.5, y: 0.6 },
-  rangeX: 0.22,
-  rangeUp: 0.25,
-  refSpeed: 9,
-  threshold: 3.2,
+export const CALIBRATION_VERSION = 3;
+
+export function defaultCalibration(mode) {
+  const profile = STROKE_PROFILES[mode] || STROKE_PROFILES.stick;
+  return {
+    version: CALIBRATION_VERSION,
+    mode,
+    stance: { x: 0.5, y: 0.62 },
+    rangeX: 0.2,
+    rangeUp: 0.22,
+    ref: profile.ref,
+    onsetToPeak: 0.12,
+    stick: null,
+  };
+}
+
+const unwrapTo = (a, ref) => {
+  let d = a - ref;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return ref + d;
 };
 
-const norm = (x, y) => {
-  const l = Math.hypot(x, y) || 1;
-  return [x / l, y / l];
-};
-
-/**
- * Fuses hand landmarks, the stick marker or pointer input into one bat.
- *
- * Coordinates:
- *  - "raw" values are mirrored, normalized image coords (0..1, y down), which
- *    match what the player sees in the mirrored camera preview.
- *  - "state" values are calibrated: the batting stance is (0, 0), a
- *    comfortable reach to either side is x = ±1, the backlift is y = +1 (up).
- */
 export class BatInput {
   constructor() {
-    this.mode = 'hands';
-    this.calib = { ...DEFAULT_CALIBRATION };
-    this.aspect = 4 / 3;
-    this.raw = { tracked: false, hands: [], grip: null, tip: null, dir: [0, 1], handScale: 0 };
-    this.state = {
-      tracked: false,
-      t: 0,
-      gx: 0,
-      gy: 0,
-      hx: 0,
-      hy: -BAT_REACH,
-      angle: -Math.PI / 2, // on-screen bat angle, 0 = pointing right, +90° = up
-      vx: 0,
-      vy: 0,
-      speed: 0,
-    };
-    this.history = [];
-    this.swings = [];
-    this.armed = true;
-    this.lastSeen = -Infinity;
-    this.pointer = null;
+    this.mode = 'stick';
+    this.stick = new StickTracker();
+    this.detector = new StrokeDetector(STROKE_PROFILES.stick);
+    this.calib = defaultCalibration('stick');
+    this.raw = { hands: [], grip: null, tip: null, found: false, conf: 0, predicted: false, scale: 0 };
+    this.state = { tracked: false, conf: 0, t: 0, gx: 0, gy: 0, angle: -Math.PI / 2, ratio: 0.85 };
+    this.handDir = { x: 0, y: 1 };
     this.f = {
-      gx: new OneEuro(1.0, 0.7),
-      gy: new OneEuro(1.0, 0.7),
-      hx: new OneEuro(1.2, 0.8),
-      hy: new OneEuro(1.2, 0.8),
+      gx: new OneEuro(1.2, 0.5),
+      gy: new OneEuro(1.2, 0.5),
+      angle: new OneEuro(1.8, 0.35),
+      ratio: new OneEuro(0.8, 0.2),
     };
+    this.lastSeen = -Infinity;
+    this.motion = null; // integrated swing position in hand sizes
+    this.pointer = null;
   }
 
   setMode(mode) {
     this.mode = mode;
-    this.reset();
+    this.setCalibration(defaultCalibration(mode));
   }
 
   setCalibration(calib) {
-    this.calib = { ...DEFAULT_CALIBRATION, ...calib };
+    this.calib = { ...defaultCalibration(this.mode), ...calib };
+    const profile = STROKE_PROFILES[this.mode] || STROKE_PROFILES.stick;
+    this.detector.configure({ ...profile, ref: this.calib.ref, onsetToPeak: this.calib.onsetToPeak });
+    this.stick.setModel(this.calib.stick);
     this.reset();
   }
 
   reset() {
-    Object.values(this.f).forEach((f) => f.reset());
-    this.history = [];
-    this.swings = [];
-    this.armed = true;
+    for (const f of Object.values(this.f)) f.reset();
+    this.detector.reset();
+    this.stick.reset();
+    this.motion = null;
   }
 
-  /** Mirrored, normalized image point -> calibrated space. */
-  toCalibrated(p) {
-    const c = this.calib;
-    return [(p.x - c.stance.x) / c.rangeX, (c.stance.y - p.y) / c.rangeUp];
-  }
+  // -----------------------------------------------------------------------
 
-  /** Camera frame update. `hands` = MediaPipe landmarks, `marker` = MarkerTracker result. */
-  updateFromCamera(t, hands, marker, aspect) {
-    this.aspect = aspect || this.aspect;
-    const a = this.aspect;
+  /**
+   * @param {number} t seconds (input clock)
+   * @param {import('./frame.js').WorkFrame|null} frame working copy of the camera frame
+   * @param {Array} landmarks MediaPipe hand landmarks (normalized, un-mirrored)
+   */
+  processCamera(t, frame, landmarks) {
+    const W = frame.width;
+    const H = frame.height;
+    const handsPx = (landmarks || []).map((lm) => lm.map((p) => ({ x: p.x * W, y: p.y * H })));
+    const mirror = (p) => ({ x: 1 - p.x / W, y: p.y / H });
     const raw = this.raw;
-    raw.hands = (hands || []).map((lm) => lm.map((p) => ({ x: 1 - p.x, y: p.y })));
+    raw.hands = handsPx.map((lm) => lm.map(mirror));
+    raw.predicted = false;
 
-    let grip = null;
-    let dirX = 0;
-    let dirY = 0;
-    if (raw.hands.length) {
-      let gx = 0;
-      let gy = 0;
-      const palms = raw.hands.map((lm) => {
-        let px = 0;
-        let py = 0;
-        for (const i of PALM) {
-          px += lm[i].x;
-          py += lm[i].y;
-        }
-        return { x: px / PALM.length, y: py / PALM.length };
-      });
-      palms.forEach((p) => {
-        gx += p.x;
-        gy += p.y;
-      });
-      grip = { x: gx / palms.length, y: gy / palms.length };
-
-      // In a fist wrapped around a handle (bat, club, sword, torch), the line
-      // of the knuckles runs along the handle. Which END is the blade is
-      // ambiguous from landmarks alone, so:
-      //  1. the blade never points back along the forearm (wrist side), and
-      //  2. otherwise it usually comes out past the index finger and thumb.
-      // When the fist faces the camera side-on the knuckles overlap and the
-      // line is unreliable, so each hand is weighted by how clearly it shows.
-      let weight = 0;
-      palms.forEach((palm, hi) => {
-        const lm = raw.hands[hi];
-        const kx = (lm[INDEX_MCP].x - lm[PINKY_MCP].x) * a;
-        const ky = lm[INDEX_MCP].y - lm[PINKY_MCP].y;
-        const scale = Math.hypot((lm[9].x - lm[0].x) * a, lm[9].y - lm[0].y) || 1;
-        const w = Math.min(1, Math.max(0, (Math.hypot(kx, ky) / scale - 0.15) / 0.35));
-        let [nx, ny] = norm(kx, ky);
-        const [fx, fy] = norm((lm[0].x - palm.x) * a, lm[0].y - palm.y); // towards the forearm
-        const intoArm = nx * fx + ny * fy;
-        const alongPrev = nx * raw.dir[0] + ny * raw.dir[1];
-        if (intoArm > 0.3 || (intoArm > -0.3 && alongPrev < -0.5)) {
-          nx = -nx;
-          ny = -ny;
-        }
-        dirX += nx * w;
-        dirY += ny * w;
-        weight += w;
-      });
-      // Weak reading: lean on the previous direction instead of flipping around.
-      if (weight < 0.6) {
-        dirX += raw.dir[0] * (0.6 - weight) * 2;
-        dirY += raw.dir[1] * (0.6 - weight) * 2;
-      }
-      // With two hands on the handle, the line between them is a steadier
-      // estimate of the handle.
-      if (palms.length === 2) {
-        const ix = (palms[1].x - palms[0].x) * a;
-        const iy = palms[1].y - palms[0].y;
-        if (Math.hypot(ix, iy) > 0.05) {
-          let [nx, ny] = norm(ix, iy);
-          if (nx * dirX + ny * dirY < 0) {
-            nx = -nx;
-            ny = -ny;
-          }
-          dirX += nx * 1.5;
-          dirY += ny * 1.5;
-        }
-      }
-      const lm = raw.hands[0];
-      raw.handScale = Math.hypot((lm[9].x - lm[0].x) * a, lm[9].y - lm[0].y);
-    }
-
+    let grip = null; // px, un-mirrored
     let tip = null;
-    if (this.mode === 'stick' && marker) {
-      tip = { x: 1 - marker.x, y: marker.y };
-      if (!grip && raw.grip && raw.tip) {
-        // Hands hidden behind the stick: keep the last grip-to-tip offset.
-        grip = { x: tip.x - (raw.tip.x - raw.grip.x), y: tip.y - (raw.tip.y - raw.grip.y) };
+    let dir = null; // unit, un-mirrored image space (y down)
+    let scale = 0;
+    let conf = 0;
+    let lengthRel = null;
+
+    if (this.mode === 'stick') {
+      const res = this.stick.update(frame, handsPx, t);
+      scale = res.scale || this.stick.scale;
+      if (res.found) {
+        grip = res.origin;
+        tip = res.tip;
+        dir = { x: Math.cos(res.angle), y: Math.sin(res.angle) };
+        conf = res.conf;
+        lengthRel = res.lengthRel;
+        raw.predicted = res.predicted;
+      } else if (res.hands.length) {
+        // Stick not seen this frame: keep the grip, hold the last direction.
+        grip = mid(res.hands.map((h) => h.palm));
+        conf = 0.2;
       }
-      if (grip) {
-        dirX = (tip.x - grip.x) * a;
-        dirY = tip.y - grip.y;
-      }
+    } else if (handsPx.length) {
+      const hands = handsPx.map(analyzeHand);
+      grip = mid(hands.map((h) => h.palm));
+      scale = hands.reduce((a, h) => a + h.scale, 0) / hands.length;
+      const d = batDirectionFromHands(hands, this.handDir);
+      this.handDir = d;
+      dir = d;
+      tip = { x: grip.x + d.x * scale * 5, y: grip.y + d.y * scale * 5 };
+      conf = 0.7;
     }
 
-    const tracked = this.mode === 'stick' ? !!(tip && grip) : !!grip;
-    raw.tracked = tracked;
-    raw.grip = grip;
-    raw.tip = tip;
-    if (!tracked) {
+    raw.found = !!(tip && this.mode === 'stick');
+    raw.conf = conf;
+    raw.grip = grip ? mirror(grip) : null;
+    raw.tip = tip ? mirror(tip) : null;
+    raw.scale = scale / W;
+
+    if (!grip) {
       if (t - this.lastSeen > 0.35) this.state.tracked = false;
+      this.detector.miss(t);
       return;
     }
     this.lastSeen = t;
-    if (dirX !== 0 || dirY !== 0) raw.dir = norm(dirX, dirY);
-
-    const [gcx, gcy] = this.toCalibrated(grip);
-    let hcx;
-    let hcy;
-    if (tip) {
-      [hcx, hcy] = this.toCalibrated(tip);
-    } else {
-      // Direction from screen space into (anisotropic) calibrated space.
-      const [cx, cy] = norm(raw.dir[0] / a / this.calib.rangeX, -raw.dir[1] / this.calib.rangeUp);
-      hcx = gcx + cx * BAT_REACH;
-      hcy = gcy + cy * BAT_REACH;
+    const s = this.state;
+    const g = mirror(grip);
+    const c = this.calib;
+    s.gx = this.f.gx.filter((g.x - c.stance.x) / c.rangeX, t);
+    s.gy = this.f.gy.filter((c.stance.y - g.y) / c.rangeUp, t);
+    if (dir) {
+      // Mirrored, y up.
+      const a = Math.atan2(-dir.y, -dir.x);
+      s.angle = this.f.angle.filter(unwrapTo(a, s.angle), t);
     }
-    this._push(t, gcx, gcy, hcx, hcy, Math.atan2(-raw.dir[1], raw.dir[0]));
+    if (lengthRel && c.stick?.lengthRel) {
+      s.ratio = this.f.ratio.filter(Math.min(1.1, lengthRel / c.stick.lengthRel), t);
+    }
+    s.tracked = true;
+    s.conf = conf;
+    s.t = t;
+
+    // Swing motion, in hand sizes: the stick tip (stick mode) or the hands.
+    const point = this.mode === 'stick' ? tip : grip;
+    if (point && scale > 0) this._motion(t, point, scale);
+    else this.detector.miss(t);
   }
 
-  /** Touch / mouse input: `nx`, `ny` in -1..1 across the screen, y up. */
+  _motion(t, p, scale) {
+    const m = this.motion;
+    if (!m || t - m.t > 0.3) {
+      this.motion = { x: -p.x / scale, y: -p.y / scale, px: p.x, py: p.y, t };
+      this.detector.push(t, this.motion.x, this.motion.y);
+      return;
+    }
+    // Integrate pixel steps divided by the current hand size, so a changing
+    // hand size never looks like movement. Mirrored, y up.
+    const dx = -(p.x - m.px) / scale;
+    const dy = -(p.y - m.py) / scale;
+    // More than ~25 hand sizes in one frame is a tracking glitch.
+    if (Math.hypot(dx, dy) > 25 * Math.max(1, (t - m.t) * 30)) {
+      this.detector.miss(t);
+      return;
+    }
+    m.x += dx;
+    m.y += dy;
+    m.px = p.x;
+    m.py = p.y;
+    m.t = t;
+    this.detector.push(t, m.x, m.y);
+  }
+
+  // -----------------------------------------------------------------------
+  // Touch / mouse
+
   setPointer(nx, ny) {
     this.pointer = { x: nx, y: ny };
   }
 
-  clearPointer() {
-    this.pointer = null;
-  }
-
-  /** Called every animation frame in touch mode so velocity decays when still. */
-  updateFromPointer(t) {
-    const p = this.pointer || { x: this.state.hx / 1.3, y: -0.7 };
-    const hx = p.x * 1.3;
-    const hy = p.y * 1.4;
-    const gx = hx * 0.45;
-    const gy = hy * 0.4 + 0.25;
-    this._push(t, gx, gy, hx, hy, Math.atan2(hy - gy, hx - gx), true);
-  }
-
-  _push(t, gx, gy, hx, hy, angle, unfiltered = false) {
+  /** Every frame in touch mode. The pointer (-1..1, y up) is the bat's toe. */
+  processPointer(t) {
+    const p = this.pointer || { x: -0.1, y: -0.6 };
     const s = this.state;
-    if (!unfiltered) {
-      gx = this.f.gx.filter(gx, t);
-      gy = this.f.gy.filter(gy, t);
-      hx = this.f.hx.filter(hx, t);
-      hy = this.f.hy.filter(hy, t);
-    }
-    // Swing motion. In hand mode it comes from the hands themselves: the bat
-    // angle there is only an estimate, and a flicker in it must not look
-    // like a swing. With a stick (or touch) it comes from the bat head.
-    const useGrip = this.mode === 'hands';
-    const mx = useGrip ? gx * GRIP_GAIN : hx;
-    const my = useGrip ? gy * GRIP_GAIN : hy;
-    // Velocity over a ~60 ms baseline is less noisy than frame to frame.
-    let vx = 0;
-    let vy = 0;
-    for (let i = this.history.length - 1; i >= 0; i--) {
-      const h = this.history[i];
-      if (t - h.t >= 0.06 || i === 0) {
-        const dt = t - h.t;
-        if (dt > 0.005) {
-          vx = (mx - h.mx) / dt;
-          vy = (my - h.my) / dt;
-        }
-        break;
-      }
-    }
-    Object.assign(s, { tracked: true, t, gx, gy, hx, hy, angle, vx, vy, speed: Math.hypot(vx, vy) });
-    this.history.push({ t, gx, gy, hx, hy, mx, my, vx, vy, speed: s.speed });
-    while (this.history.length && t - this.history[0].t > HISTORY_SECONDS) this.history.shift();
-
-    // Swing onset: speed rises through the threshold (hysteresis re-arms it).
-    const th = this.calib.threshold;
-    if (this.armed && s.speed > th) {
-      this.armed = false;
-      this.swings.push({ t, gx, gy, hx, hy });
-    } else if (!this.armed && s.speed < th * 0.45) {
-      this.armed = true;
-    }
+    s.gx = p.x * 0.55;
+    s.gy = p.y * 0.5 + 0.25;
+    s.angle = Math.atan2(p.y + 0.15, p.x - 0.05);
+    s.ratio = 0.85;
+    s.tracked = true;
+    s.conf = 1;
+    s.t = t;
+    // Screen units → pseudo hand sizes (half the screen ≈ 12).
+    this.detector.push(t, p.x * 12, p.y * 12);
   }
+}
 
-  /** Swing onsets detected since the last call. */
-  takeSwings() {
-    const out = this.swings;
-    this.swings = [];
-    return out;
+function mid(points) {
+  let x = 0;
+  let y = 0;
+  for (const p of points) {
+    x += p.x;
+    y += p.y;
   }
-
-  /** Mean swing velocity (hands in hand mode, bat head otherwise) over [t0, t1]. */
-  velocityBetween(t0, t1) {
-    let vx = 0;
-    let vy = 0;
-    let n = 0;
-    let peak = 0;
-    for (const h of this.history) {
-      if (h.t < t0 || h.t > t1) continue;
-      vx += h.vx;
-      vy += h.vy;
-      peak = Math.max(peak, h.speed);
-      n++;
-    }
-    if (!n) return { vx: this.state.vx, vy: this.state.vy, peak: this.state.speed };
-    return { vx: vx / n, vy: vy / n, peak };
-  }
+  return { x: x / points.length, y: y / points.length };
 }

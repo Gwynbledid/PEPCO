@@ -8,9 +8,11 @@ export async function startCamera(video) {
     audio: false,
     video: {
       facingMode: 'user',
-      width: { ideal: 640 },
-      height: { ideal: 480 },
-      frameRate: { ideal: 30, max: 60 },
+      // More pixels help find a thin stick; 60 fps (where the camera has it)
+      // catches fast swings better.
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 60 },
     },
   });
   video.srcObject = stream;
