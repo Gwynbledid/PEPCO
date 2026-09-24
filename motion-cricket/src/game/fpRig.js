@@ -81,6 +81,24 @@ export class FirstPersonRig {
     this.rig.add(this.trail);
     this.trailPts = [];
 
+    // Own copies of the materials, so the first-person bat can fade to
+    // see-through without touching the batter's bat in the other views.
+    this.fadeMats = [];
+    const own = new Map();
+    this.rig.traverse((m) => {
+      if (!m.isMesh || m === this.trail) return;
+      if (!own.has(m.material)) {
+        const c = m.material.clone();
+        c.onBeforeCompile = m.material.onBeforeCompile;
+        c.customProgramCacheKey = m.material.customProgramCacheKey;
+        c.transparent = true;
+        own.set(m.material, c);
+        this.fadeMats.push(c);
+      }
+      m.material = own.get(m.material);
+    });
+    this.opacity = 1;
+
     this.grip = new THREE.Vector3(0.08, -0.25, -0.72);
     this.dir = new THREE.Vector3(0, -1, -0.3).normalize();
     this.assistTarget = null;
@@ -107,8 +125,10 @@ export class FirstPersonRig {
    *   angle (on-screen direction of the blade, radians, y up), ratio (how
    *   side-on the stick is: 1 = flat to the camera, small = pointing at it)
    * @param {number} glow swing trail strength 0..1
+   * @param {boolean} clearView the ball is on its way: fade the bat if it's
+   *   in front of the pitch, so it never hides the ball
    */
-  update(s, glow = 0) {
+  update(s, glow = 0, clearView = false) {
     const gx = THREE.MathUtils.clamp(s.gx, -2, 2);
     const gy = THREE.MathUtils.clamp(s.gy, -1.6, 2);
     const target = this._t.a.set(0.1 * this.hand + gx * 0.3, -0.1 + gy * 0.25, -0.82 - Math.max(0, -gy) * 0.05);
@@ -150,6 +170,18 @@ export class FirstPersonRig {
       sl.scale.set(1, len, 1);
       sl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), along);
     }
+
+    // See-through while the blade covers the view down the pitch.
+    let blocking = false;
+    if (clearView) {
+      for (const y of [-0.05, -BLADE * 0.5, -BLADE]) {
+        const p = new THREE.Vector3(0, y, 0).applyMatrix4(this.bat.matrix).applyMatrix4(this.camera.projectionMatrix);
+        if (Math.abs(p.x) < 0.38 && p.y > -0.8 && p.y < 0.3) blocking = true;
+      }
+    }
+    const want = blocking ? 0.3 : 1;
+    this.opacity += (want - this.opacity) * (want < this.opacity ? 0.25 : 0.35);
+    for (const m of this.fadeMats) m.opacity = this.opacity;
 
     // Trail from the middle of the blade to the toe.
     const mid = new THREE.Vector3(0, -0.25, 0).applyMatrix4(this.bat.matrix);

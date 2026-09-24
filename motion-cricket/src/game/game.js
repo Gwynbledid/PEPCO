@@ -75,6 +75,7 @@ export class Game {
     this.fielders.setHand(this.hand);
     this.bowler.setHand(this.hand);
     this.rig.setHand(this.hand);
+    this.batPose.setMode(settings.batView);
     this.batter.setJersey(settings.name || 'YOU', settings.number || '18');
     this.batterSpot = new THREE.Vector3(-0.32 * this.hand, 0, -1.05);
     this.batter.place(this.batterSpot, this.hand);
@@ -209,7 +210,10 @@ export class Game {
   _play(dt, sdt, now) {
     const inp = this.input.state;
     const glow = this.input.detector.speed / Math.max(1, this.input.detector.ref) - 0.25;
-    if (this.camMode === 'fp') this.rig.update(this.batPose.update(dt, this.input.detector, inp, this.hand), glow);
+    if (this.camMode === 'fp') {
+      const incoming = this.state === 'runup' || (this.state === 'bowled' && now < this.releaseT + this.delivery.tContact - 0.3);
+      this.rig.update(this.batPose.update(dt, this.input.detector, inp, this.hand), glow, incoming);
+    }
 
     switch (this.state) {
       case 'ready':

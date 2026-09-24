@@ -1,8 +1,12 @@
-// Where the first-person bat is drawn. At rest it waits in a backlift,
-// raised up to the side and out of the way of the view down the pitch. When
-// the player swings, it swings through in the direction they actually
-// swung (down through the ball, then on into the follow-through), holds the
-// finish for a moment, and returns to the backlift.
+// Where the first-person bat is drawn.
+//
+// 'follow' (default): the bat copies the tracked hands and stick, live. When
+// tracking drops out it eases back to a resting backlift; when a fast swing
+// blurs the stick (the tracked angle stops changing mid-swing), the swing
+// animation carries it through in the direction the hands went.
+//
+// 'backlift': the bat waits raised up to the side, out of the way of the view
+// down the pitch, and plays the swing animation when the player swings.
 //
 // The result is in the same form as BatInput.state, so the rig draws it.
 
@@ -23,11 +27,21 @@ const angLerp = (a, b, t) => {
 
 export class BatPose {
   constructor() {
+    this.mode = 'follow';
     this.anim = null;
+    this.live = 0; // 0 = resting pose, 1 = following the tracked bat
+    this.lastAngle = null;
+    this.stale = 0; // how long the tracked angle hasn't moved
     this.state = { tracked: true, gx: 0, gy: 0, angle: 0, ratio: 0.9 };
   }
 
   reset() {
+    this.anim = null;
+  }
+
+  /** @param {'follow'|'backlift'} mode */
+  setMode(mode) {
+    this.mode = mode === 'backlift' ? 'backlift' : 'follow';
     this.anim = null;
   }
 
@@ -45,6 +59,41 @@ export class BatPose {
    * @param {1|-1} hand
    */
   update(dt, det, inp, hand) {
+    return this.mode === 'follow' ? this._follow(dt, det, inp, hand) : this._animated(dt, det, inp, hand);
+  }
+
+  _follow(dt, det, inp, hand) {
+    const s = this.state;
+    const tracked = !!inp?.tracked;
+    // Ease between the live bat and the resting backlift when tracking comes and goes.
+    this.live = clamp(this.live + (tracked ? dt / 0.15 : -dt / 0.5), 0, 1);
+    // A frozen angle during a fast swing means the stick blurred away.
+    if (tracked && this.lastAngle !== null && Math.abs(inp.angle - this.lastAngle) < 0.002) this.stale += dt;
+    else this.stale = 0;
+    this.lastAngle = tracked ? inp.angle : null;
+    const cur = det.current();
+    const swinging = cur && cur.peak >= Math.max(det.vOn * 1.6, 0.4 * det.ref);
+    const blurred = swinging && this.stale > 0.05;
+    if (blurred || this.anim) {
+      if (!this.anim) this.anim = { onset: cur.onset, age: 0, vx: cur.vx, vy: cur.vy, from: { gx: inp.gx, gy: inp.gy, angle: inp.angle } };
+      // Tracking came back after the swing: hand the bat straight back to it.
+      if (!blurred && this.stale === 0 && this.anim.age > 0.08) this.anim = null;
+    }
+    if (this.anim) {
+      const p = this._animated(dt, det, inp, hand, this.anim.from);
+      if (!this.anim || this.anim.age > SWING + 0.15) this.anim = null;
+      return p;
+    }
+    const rest = this.backlift(hand, null);
+    const k = ease(this.live);
+    s.gx = lerp(rest.gx, inp?.gx ?? rest.gx, k);
+    s.gy = lerp(rest.gy, inp?.gy ?? rest.gy, k);
+    s.angle = angLerp(rest.angle, inp?.angle ?? rest.angle, k);
+    s.ratio = tracked ? inp.ratio : 0.9;
+    return s;
+  }
+
+  _animated(dt, det, inp, hand, start = null) {
     const cur = det.current();
     // A real swing (not a fidget or a slow pick-up) starts the animation.
     const strong = cur && cur.peak >= Math.max(det.vOn * 1.6, 0.4 * det.ref);
@@ -52,7 +101,7 @@ export class BatPose {
       this.anim = { onset: cur.onset, age: 0, vx: cur.vx, vy: cur.vy };
     }
     const a = this.anim;
-    const rest = this.backlift(hand, inp);
+    const rest = start || this.backlift(hand, inp);
     const s = this.state;
     if (!a) {
       s.gx = rest.gx;

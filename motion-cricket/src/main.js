@@ -31,6 +31,7 @@ const DEFAULTS = {
   chimes: true,
   easyContact: true,
   autoTiming: true,
+  batView: 'follow',
   showCam: true,
   name: 'YOU',
   number: '18',
