@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { BallView } from './ball.js';
 import { Batter } from './batter.js';
 import { Bowler, Fielders, NonStriker, Umpire } from './cast.js';
-import { CAMERA_PITCH, CONTACT_Z, EYE, FIELD_CENTER, TIMING } from './config.js';
-import { edgeChance, pickStroke } from './contact.js';
+import { BALL_RADIUS, CAMERA_PITCH, CONTACT_Z, EYE, FIELD_CENTER, TIMING } from './config.js';
+import { pointToSegment, sweptTouch } from './batContact.js';
 import { buildCrowd } from './crowd.js';
 import { buildField } from './field.js';
 import { FirstPersonRig } from './fpRig.js';
@@ -16,8 +16,10 @@ import { buildStadium } from './stadium.js';
 import { buildStumps } from './stumps.js';
 import { World } from './world.js';
 
-// The match: bowler runs in, the ball comes down, the player's swing is
-// judged as the ball reaches the bat, and the shot plays out with fielders,
+// The match: bowler runs in, the ball comes down, and if the bat (drawn
+// where the player's stick is) touches the ball, it's hit: where and when it
+// touched decide the timing, and how the bat was moving decides the shot.
+// The shot then plays out with fielders,
 // boundaries, catches and a cinematic replay for sixes.
 
 const DEG = Math.PI / 180;
@@ -56,7 +58,6 @@ export class Game {
     this.rig = new FirstPersonRig(camera, assets);
     this.batPose = new BatPose();
     // Learned timing correction (camera and screen delay differ per device).
-    this.timingAdj = 0;
 
     this.mode = 'menu';
     this.state = 'idle';
@@ -75,7 +76,7 @@ export class Game {
     this.fielders.setHand(this.hand);
     this.bowler.setHand(this.hand);
     this.rig.setHand(this.hand);
-    this.batPose.setMode(settings.batView);
+    this.batPose.setLead(settings.batLead);
     this.batter.setJersey(settings.name || 'YOU', settings.number || '18');
     this.batterSpot = new THREE.Vector3(-0.32 * this.hand, 0, -1.05);
     this.batter.place(this.batterSpot, this.hand);
@@ -130,6 +131,9 @@ export class Game {
     this.delivery = null;
     this.hit = null;
     this.decided = false;
+    this.swung = false;
+    this.prevTouch = null;
+    this.hitPoint = null;
     this.resolved = false;
     this.timeScale = 1;
     this.camMode = 'fp';
@@ -212,7 +216,8 @@ export class Game {
     const glow = this.input.detector.speed / Math.max(1, this.input.detector.ref) - 0.25;
     if (this.camMode === 'fp') {
       const incoming = this.state === 'runup' || (this.state === 'bowled' && now < this.releaseT + this.delivery.tContact - 0.3);
-      this.rig.update(this.batPose.update(dt, this.input.detector, inp, this.hand), glow, incoming);
+      const age = this.settings.input === 'touch' ? 0 : now - this.toGame(inp.t);
+      this.rig.update(this.batPose.update(inp, age), glow, incoming);
     }
 
     switch (this.state) {
@@ -283,27 +288,6 @@ export class Game {
     this.input.detector.strokes.length = 0;
   }
 
-  _strokes() {
-    const g = this.toGame;
-    return this.input.detector.since(-Infinity).map((s) => ({
-      ...s,
-      onset: g(s.onset),
-      tPeak: g(s.tPeak),
-      end: g(s.end),
-    }));
-  }
-
-  _pick(now) {
-    const d = this.input.detector;
-    return pickStroke(this._strokes(), {
-      T: this.releaseT + this.delivery.tContact,
-      latency: (this.settings.latency ?? TIMING.latency * 1000) / 1000 + this.timingAdj,
-      now,
-      vOn: d.vOn,
-      onsetToPeak: this.input.calib.onsetToPeak,
-    });
-  }
-
   _bowled(dt, now) {
     const d = this.delivery;
     const t = now - this.releaseT;
@@ -314,103 +298,139 @@ export class Game {
       this.ball.dust(d.bounce);
       this.audio.pitch();
     }
-    const T = this.releaseT + d.tContact;
-    if (!this.decided && now >= T) {
-      const pick = this._pick(now);
-      if (pick && pick.stroke) {
-        if (this._contact(pick, now)) return;
-      } else if (now > T + TIMING.lateWait) {
+    const T = this.releaseT + (this.hitPoint || this._findHitPoint()).t;
+    if (!this.decided && this.camMode === 'fp') {
+      const touch = this._touch(now, T);
+      if (touch && this._contact(touch, now)) return;
+      if (now > T + TIMING.late) {
         this.decided = true;
-        if (pick && pick.early) {
-          this.hud.toast('Too early!');
-          this._learnTiming(pick.e);
-        }
+        if (this.swung) this.hud.toast('Missed it!');
       }
     }
-    // A late swing still gets its chance before the ball is given as missed.
-    if (t >= d.tStumps && !this.resolved && (this.decided || now > T + TIMING.lateWait)) this._missed();
+    if (t >= d.tStumps && !this.resolved) this._missed();
   }
 
-  /** The bat met the ball (or swished past it). Returns true if it's a hit. */
-  _contact(pick, now) {
+  /**
+   * Is the bat touching the ball? The ball is met at the hitting point: where
+   * it reaches the batter. The bat hits it by moving through that point
+   * within TIMING.early before the ball gets there to TIMING.late after (out
+   * in front, or beside the batter), or by being there when it arrives (a
+   * block). Tested on screen, where the player sees the bat and the ball.
+   */
+  /**
+   * Where and when the ball is there to be hit: as it reaches the batter,
+   * or a little before for a low ball that would by then be below the
+   * bottom of the screen, so it's always met where the player can see it.
+   */
+  _findHitPoint() {
+    const cam = this.camera;
+    cam.updateMatrixWorld();
     const d = this.delivery;
-    const t = now - this.releaseT;
-    const origin = d.posAt(Math.max(d.tContact, Math.min(t, d.tContact + 0.12)));
-    let contact = 'middle';
-    if (this.settings.easyContact) {
-      if (Math.random() < edgeChance(pick.e)) contact = 'edge';
-    } else {
-      // The bat has to actually be where the ball is (angle on screen).
-      const sweet = this.rig.sweetSpot().project(this.camera);
-      const ball = new THREE.Vector3(origin.x, origin.y, origin.z).project(this.camera);
-      const dist = Math.hypot((sweet.x - ball.x) * this.camera.aspect, sweet.y - ball.y);
-      if (dist > 0.42) {
-        this.decided = true;
-        this.hud.toast('Missed it!');
-        return false;
-      }
-      if (dist > 0.26 || Math.random() < edgeChance(pick.e) * 0.5) contact = 'edge';
+    let t = d.tContact;
+    let c;
+    let q;
+    for (;;) {
+      const p = d.posAt(t);
+      c = cam.worldToLocal(new THREE.Vector3(p.x, p.y, p.z));
+      q = c.clone().applyMatrix4(cam.projectionMatrix);
+      if (q.y >= -0.8 || t <= d.tContact - 0.1) break;
+      t -= 0.005;
     }
+    // Touching: within a ball's radius plus half the blade's width (more
+    // with easy contact), at the hitting point's distance.
+    const reach = BALL_RADIUS + 0.054 + (this.settings.easyContact ? 0.09 : 0.035);
+    this.hitPoint = { t, x: q.x * cam.aspect, y: q.y, radius: reach / (Math.max(0.3, -c.z) * Math.tan((cam.fov * DEG) / 2)) };
+    return this.hitPoint;
+  }
+
+  _touch(now, T) {
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    const hp = this.hitPoint || this._findHitPoint();
+    const line = this.rig.line();
+    const toScreen = (v) => {
+      const q = v.clone().applyMatrix4(cam.projectionMatrix);
+      return { x: q.x * cam.aspect, y: q.y };
+    };
+    const cur = { top: toScreen(line.top), toe: toScreen(line.toe), now };
+    const here = pointToSegment(hp, cur.top, cur.toe);
+    cur.dist = here.dist;
+    const prev = this.prevTouch;
+    this.prevTouch = cur;
+    if (now < T - TIMING.early) return null;
+    const det = this.input.detector;
+    if (det.speed > det.vOn * 1.5) this.swung = true;
+    const where = (u, dist, t) => ({ t, e: t - T, v: (u - line.shoulder) / (1 - line.shoulder), off: dist / hp.radius });
+    // The middle of the ball: the bat swept through it this frame.
+    const core = hp.radius * 0.4;
+    if (prev && prev.dist > core) {
+      const hit = sweptTouch(prev, cur, hp, hp, core);
+      if (hit) return where(hit.u, 0, prev.now + (now - prev.now) * hit.k);
+    }
+    // Just caught it: came within reach and went away again without meeting it properly.
+    if (prev && prev.dist <= hp.radius && cur.dist > hp.radius && prev.now >= T - TIMING.early) {
+      const r = pointToSegment(hp, prev.top, prev.toe);
+      return where(r.u, r.dist, prev.now);
+    }
+    // Held there when the ball arrives: it hits the bat. (A bat still
+    // moving in is left to meet it properly next frame.)
+    const settled = !prev || Math.abs(prev.dist - cur.dist) < core * 0.5;
+    if (cur.dist <= hp.radius && now >= T && settled) return where(here.u, here.dist, T);
+    return null;
+  }
+
+  /** The bat touched the ball. */
+  _contact(touch, now) {
+    const d = this.delivery;
+    const origin = d.posAt(touch.t - this.releaseT);
+    const easy = this.settings.easyContact;
+    // Off the middle of the blade: the handle, the shoulder, the toe, or
+    // only just catching it.
+    const edge = touch.v < (easy ? 0.02 : 0.12) || touch.v > 0.98 || touch.off > (easy ? 0.8 : 0.6);
+    const contact = edge ? 'edge' : 'middle';
     this.decided = true;
     this.hit = {
       simT0: this.simT,
       launched: now,
       origin: { x: origin.x, y: Math.max(0.15, origin.y), z: origin.z },
       contact,
-      refineUntil: now + TIMING.refine,
-      strokeRef: pick.stroke,
       outcome: null,
       revealed: false,
       prev: null,
       blendFrom: 0,
     };
-    this._shoot(pick);
+    // The shot goes the way the bat was moving when it touched the ball.
+    const det = this.input.detector;
+    const cur = det.current();
+    const info = shotFromSwing({
+      vx: det.vx,
+      vy: det.vy,
+      peak: Math.max(det.speed, cur ? cur.peak * 0.9 : 0),
+      ref: this.input.calib.ref,
+      e: touch.e,
+      hand: this.hand,
+      contact,
+    });
+    const h = this.hit;
+    h.info = info;
+    h.e = touch.e;
+    h.flight = simulateShot(h.origin, launchVelocity(info.azimuth, info.elevation, info.speed));
+    this.ball.spinFrom(launchVelocity(info.azimuth, 0, 1));
     this.state = 'hit';
     this.stateT = 0;
-    this.audio.hit(this.hit.info.power, this.hit.info.quality, contact === 'edge');
+    this.audio.hit(info.power, info.quality, contact === 'edge');
     this.hud.flash();
     // Let the bat visibly meet the ball.
     const local = this.camera.worldToLocal(new THREE.Vector3(origin.x, origin.y, origin.z));
-    this.rig.assist(local, 0.75);
+    this.rig.assist(local, 0.5);
     this.assistT = now;
     return true;
-  }
-
-  _shoot(pick) {
-    const h = this.hit;
-    const s = pick.stroke;
-    const info = shotFromSwing({
-      vx: s.vx,
-      vy: s.vy,
-      fx: s.fx,
-      fy: s.fy,
-      peak: s.peak,
-      ref: this.input.calib.ref,
-      e: pick.e,
-      hand: this.hand,
-      contact: h.contact,
-    });
-    h.info = info;
-    h.e = pick.e;
-    h.flight = simulateShot(h.origin, launchVelocity(info.azimuth, info.elevation, info.speed));
-    h.peak = s.peak;
-    this.ball.spinFrom(launchVelocity(info.azimuth, 0, 1));
   }
 
   _flight(dt, sdt, now) {
     const h = this.hit;
     const st = this.simT - h.simT0;
-    // Refine: the rest of the swing (its peak, the follow-through) arrives
-    // over the next few frames. Update the shot and blend to the new path.
-    if (!h.outcome && now <= h.refineUntil) {
-      const pick = this._pick(now);
-      if (pick && pick.stroke && (pick.stroke.peak !== h.peak || Math.abs(pick.e - h.e) > 0.005)) {
-        h.prev = h.flight;
-        h.blendFrom = st;
-        this._shoot(pick);
-      }
-    }
-    if (!h.outcome && now > h.refineUntil) this._finalize();
+    if (!h.outcome) this._finalize();
 
     // Ball position, blending from the provisional path to the final one.
     let p = shotPos(h.flight, st);
@@ -431,7 +451,7 @@ export class Game {
     this.ball.setPosition(p, sdt);
 
     // Contact assist fades out.
-    const a = Math.max(0, 0.75 - (now - this.assistT) / 0.25);
+    const a = Math.max(0, 0.5 - (now - this.assistT) / 0.2);
     this.rig.assist(a > 0 ? this.rig.assistTarget : null, a);
 
     if (h.info.loft && !h.info.defensive) {
@@ -458,15 +478,8 @@ export class Game {
     if (this.camMode === 'six') this._sixCamera(dt, st);
   }
 
-  /** Nudges the timing towards the player's habit, so their device's delay stops mattering. */
-  _learnTiming(e) {
-    if (this.settings.autoTiming === false) return;
-    this.timingAdj = Math.max(-0.12, Math.min(0.3, this.timingAdj + Math.max(-0.2, Math.min(0.2, e)) * 0.35));
-  }
-
   _finalize() {
     const h = this.hit;
-    this._learnTiming(h.e);
     const o = resolveOutcome(h.flight, [
       ...this.fielders.plan(),
       { name: 'Bowler', pos: { x: this.bowler.fieldPos.x, z: this.bowler.fieldPos.z }, speed: 4.5, reaction: 0.55 },
@@ -529,7 +542,7 @@ export class Game {
       this.audio.stumps();
       this._score({ type: 'bowled' });
     } else {
-      this._score({ type: 'dot', label: this.decided ? 'BEATEN!' : 'LEFT ALONE' });
+      this._score({ type: 'dot', label: this.swung ? 'BEATEN!' : 'LEFT ALONE' });
     }
     this.state = 'dead';
     this.stateT = 0;

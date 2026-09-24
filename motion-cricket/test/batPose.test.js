@@ -1,42 +1,41 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BatPose } from '../src/game/batPose.js';
+import { BatInput } from '../src/tracking/batInput.js';
 
-const still = { vOn: 10, ref: 90, current: () => null };
-const inp = (gx, gy, angle) => ({ tracked: true, gx, gy, angle, ratio: 0.8 });
+const inp = (o) => ({ tracked: true, gx: 0, gy: 0, angle: -1.57, ratio: 0.8, vgx: 0, vgy: 0, vangle: 0, ...o });
 
-test('follow mode: the bat copies the tracked hands and stick', () => {
+test('the bat is exactly where the tracked stick is, the same frame', () => {
   const pose = new BatPose();
-  let s;
-  for (let i = 0; i < 20; i++) s = pose.update(1 / 60, still, inp(-0.7, 0.4, 2.2), 1);
-  assert.ok(Math.abs(s.gx + 0.7) < 1e-6 && Math.abs(s.gy - 0.4) < 1e-6 && Math.abs(s.angle - 2.2) < 1e-6);
-  // Move the hands: the bat moves with them, the same frame.
-  s = pose.update(1 / 60, still, inp(0.5, -0.2, -1.2), 1);
-  assert.ok(Math.abs(s.gx - 0.5) < 1e-6 && Math.abs(s.angle + 1.2) < 1e-6);
+  let s = pose.update(inp({ gx: -0.7, gy: 0.4, angle: 2.2 }));
+  assert.deepEqual([s.gx, s.gy, s.angle], [-0.7, 0.4, 2.2]);
+  s = pose.update(inp({ gx: 0.5, gy: -0.2, angle: -1.2 }));
+  assert.deepEqual([s.gx, s.gy, s.angle], [0.5, -0.2, -1.2]);
 });
 
-test('follow mode: lost tracking eases back to the backlift', () => {
+test('holding still: small jitter is never amplified', () => {
   const pose = new BatPose();
-  for (let i = 0; i < 20; i++) pose.update(1 / 60, still, inp(0, 0, -1.57), 1);
-  let s;
-  for (let i = 0; i < 60; i++) s = pose.update(1 / 60, still, { tracked: false, gx: 0, gy: 0, angle: -1.57 }, 1);
-  assert.ok(s.gy > 1 && s.gx > 0.9, 'raised up to the side');
+  const s = pose.update(inp({ gx: 0.1, vgx: 0.2, vangle: 0.5 }), 0.03);
+  assert.equal(s.gx, 0.1);
+  assert.equal(s.angle, -1.57);
 });
 
-test('follow mode: a swing that blurs the stick is carried through in its direction', () => {
+test('moving fast: the bat is drawn ahead along the motion, making up the camera delay', () => {
   const pose = new BatPose();
-  const stroke = { onset: 1, peak: 80, vx: 1, vy: -0.2 };
-  const det = { vOn: 10, ref: 90, current: () => stroke };
-  let s;
-  for (let i = 0; i < 12; i++) s = pose.update(1 / 60, det, inp(-0.5, 0.8, 2.4), 1); // frozen angle
-  assert.ok(pose.anim, 'animating');
-  for (let i = 0; i < 6; i++) s = pose.update(1 / 60, det, inp(-0.5, 0.8, 2.4), 1);
-  assert.ok(s.gx > 0, `swung to the right (gx ${s.gx.toFixed(2)})`);
+  pose.setLead(80);
+  const s = pose.update(inp({ angle: 1, vangle: -12, gx: 0, vgx: 3 }), 0);
+  assert.ok(Math.abs(s.angle - (1 - 12 * 0.08)) < 1e-9, `angle ${s.angle}`);
+  assert.ok(Math.abs(s.gx - 0.24) < 1e-9);
 });
 
-test('backlift mode: the bat waits raised to the side', () => {
-  const pose = new BatPose();
-  pose.setMode('backlift');
-  const s = pose.update(1 / 60, still, inp(0, -1, -1.57), -1);
-  assert.ok(s.gx < -0.7 && s.gy > 0.8);
+test('touch input moves the bat with no smoothing, and reports its rates', () => {
+  const input = new BatInput();
+  input.mode = 'touch';
+  input.setPointer(-0.5, 0.5);
+  input.processPointer(1);
+  input.setPointer(0.5, -0.5);
+  input.processPointer(1 + 1 / 60);
+  const s = input.state;
+  assert.ok(Math.abs(s.gx - 0.5 * 0.55) < 1e-9);
+  assert.ok(s.vgx > 10, `vgx ${s.vgx}`);
 });

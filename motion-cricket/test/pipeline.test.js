@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { pickStroke } from '../src/game/contact.js';
 import { shotFromSwing } from '../src/game/shots.js';
 import { BatInput, defaultCalibration } from '../src/tracking/batInput.js';
 import { WorkFrame } from '../src/tracking/frame.js';
@@ -86,7 +85,7 @@ test('the stick (not the arm) is tracked through a whole shot', () => {
   assert.ok(found >= total - 1, `found the stick in ${found}/${total} frames`);
 });
 
-test('backlift + downswing: one swing, the downswing, and it hits', () => {
+test('backlift + downswing: one swing, the downswing, and a ground shot', () => {
   const input = calibrated();
   const { tDownStart, tEnd } = swing(input);
   const strokes = input.detector.strokes.filter((s) => s.valid && !s.backlift);
@@ -97,16 +96,8 @@ test('backlift + downswing: one swing, the downswing, and it hits', () => {
   const counted = input.detector.countedSwings(0, tEnd + 1);
   assert.equal(counted.length, 1, `counted ${counted.length} swings`);
 
-  // Ball arrives at the peak (latency 0.1): a clean hit along the ground.
-  const pick = pickStroke(input.detector.since(0), {
-    T: s.tPeak - 0.1,
-    latency: 0.1,
-    now: tEnd,
-    vOn: input.detector.vOn,
-    onsetToPeak: 0.12,
-  });
-  assert.ok(pick && pick.stroke === s, 'picked the downswing');
-  const shot = shotFromSwing({ ...s, ref: input.calib.ref, e: pick.e, hand: 1, rand: () => 0.5 });
+  // The bat touches the ball mid-downswing, on time: a clean hit along the ground.
+  const shot = shotFromSwing({ ...s, ref: input.calib.ref, e: 0, hand: 1, rand: () => 0.5 });
   assert.equal(shot.loft, false);
   assert.ok(!shot.defensive, `power ${shot.power.toFixed(2)}`);
 });

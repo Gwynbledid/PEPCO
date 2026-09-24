@@ -52,20 +52,22 @@ the game server.
 - **Power** is your swing speed compared with your own full swing (measured
   in calibration). **Timing** decides how cleanly you connect. Perfect
   timing is what clears the rope.
-- **The swing is judged when the ball arrives**, from whatever the bat is
-  doing at that moment. Picking the bat up (the backlift) doesn't use up your
-  shot, and neither does nudging it or fidgeting: a swing has to be fast and
-  travel a real distance.
-- **Any direction counts.** A swing is any fast bat movement, whichever way
-  your arms go. If the stick blurs out of sight mid-swing, the game follows
-  your hands instead, so fast swings aren't lost.
-- **The on-screen bat follows your hands and stick**, live. While the ball
-  is on its way, it turns see-through whenever it's in front of the pitch,
-  so it never hides the ball. If the camera loses you, it rests in a raised
-  backlift. (Settings → On-screen bat → "Waits in backlift" keeps it raised
-  and only swings it when you swing.)
-- **Auto timing** (Settings, on by default): if you keep swinging early or
-  late, the game shifts its timing window to match you and your camera.
+- **The ball is hit when your bat touches it.** The on-screen bat is
+  exactly where your stick is, with no swing animation and no smoothing
+  delay. Moving your hands, picking the bat up or fidgeting never plays a
+  shot. Only the bat meeting the ball does.
+- **Timing** is when the bat meets the ball. Meet it as it reaches you for
+  perfect timing. Out in front is early and pulls it to the leg side;
+  beside you is late and pushes it to the off side. Swing too early or too
+  late and you miss. Hold the bat still in the ball's path and you block it.
+- **Direction and height** come from how the bat is moving at the moment it
+  touches the ball, so any swing in any direction works. Hitting it off the
+  handle or the toe gives an edge.
+- **No lag:** the camera sees you about a tenth of a second late, so while
+  the stick moves the bat is drawn slightly ahead along its path to make up
+  the difference. (Settings → **Bat delay fix**: slide right if the bat
+  trails your stick, left if it overshoots.) While the ball is on its way,
+  the bat turns see-through whenever it's in front of the pitch.
 - **Six meter:** every lofted hit shows its distance live. Sixes get a
   cinematic replay from behind the batter, and your longest six is saved.
 
@@ -90,8 +92,8 @@ it counted, and tells you when it ignored a backlift or a small movement.
   front of white curtains is hard to see. Wrap it in coloured paper or tape,
   or stand in front of a different-coloured wall. Calibration warns you if
   the contrast is too low.
-- Start on **Slow** pace. If your shots are always "Early" or always "Late",
-  move the **Timing** slider in Settings to match your camera.
+- Start on **Slow** pace. Turn on **Easy contact** (on by default) for a
+  bigger hitting area while you learn.
 
 ## Look and sound
 
@@ -170,8 +172,8 @@ src/
   game/
     config.js             layout, pace, timing constants
     game.js               match flow, contact, scoring, cameras, six replay
-    contact.js            which swing met the ball, and its timing
-    batPose.js            on-screen bat: follows your hands, or rests in a backlift and swings
+    batPose.js            on-screen bat: exactly where the stick is, drawn ahead to hide camera delay
+    batContact.js         does the bat touch the ball (on screen, swept between frames)
     shots.js              swing → direction, height, power, shot name
     physics.js            delivery (lengths, bounce, swing, seam) and struck-ball flight
     outcome.js            field placings, catches, runs, boundaries
@@ -187,7 +189,7 @@ src/
 test/                     node --test suites (+ a tiny rasterizer for drawn frames)
 ```
 
-**Tuning knobs:** timing windows and default latency (`TIMING` in
+**Tuning knobs:** the hitting window and default bat delay fix (`TIMING` in
 `config.js`), pace ranges (`PACES`), lengths and bounce (`LENGTHS` in
 `physics.js`), swing thresholds (`STROKE_PROFILES` in `strokeDetector.js`),
 shot power (`shots.js`), field placings (`FIELD` in `outcome.js`).

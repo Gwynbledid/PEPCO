@@ -87,14 +87,6 @@
             </div>
           </div>
           <div class="field">
-            <label>On-screen bat</label>
-            <div class="seg" data-key="batView">
-              <button data-v="follow">Follows my hands</button>
-              <button data-v="backlift">Waits in backlift</button>
-            </div>
-            <p class="note">The bat turns see-through whenever it's in front of the ball.</p>
-          </div>
-          <div class="field">
             <label>Bowling pace</label>
             <div class="seg" data-key="pace">
               <button data-v="slow">Slow</button>
@@ -103,9 +95,9 @@
             </div>
           </div>
           <div class="field">
-            <label>Timing <span class="val" id="latencyVal"></span></label>
-            <input type="range" min="0" max="220" step="10" data-key="latency" />
-            <p class="note">If your shots are always "Early", slide right; always "Late", slide left.</p>
+            <label>Bat delay fix <span class="val" id="latencyVal"></span></label>
+            <input type="range" min="0" max="160" step="10" data-key="batLead" />
+            <p class="note">The camera sees you a moment late, so the bat is drawn a little ahead while it moves. If the bat trails behind your stick, slide right. If it overshoots or wobbles, slide left.</p>
           </div>
           <div class="field">
             <label>Graphics</label>
@@ -129,8 +121,7 @@
           </div>
           <div class="field toggles">
             <label class="tog"><input type="checkbox" data-key="chimes" /> Wind chimes</label>
-            <label class="tog"><input type="checkbox" data-key="autoTiming" /> Learn my timing automatically</label>
-            <label class="tog"><input type="checkbox" data-key="easyContact" /> Easy contact (only timing matters)</label>
+            <label class="tog"><input type="checkbox" data-key="easyContact" /> Easy contact (bigger hitting area)</label>
             <label class="tog"><input type="checkbox" data-key="showCam" /> Show camera preview</label>
           </div>
           <div class="field two">
@@ -175,7 +166,7 @@
               <li><b>Set up.</b> Laptop or phone at chest height, landscape. Stand 1.5–2.5 m back in good light.</li>
               <li><b>Your bat.</b> Any stick works: a rolled newspaper, a broom handle, a toy bat. It is easiest to see if it's a different colour from the wall behind you.</li>
               <li><b>Calibrate once.</b> The game learns your stick, your stance, your reach and how fast you swing.</li>
-              <li><b>Timing.</b> Make the fastest part of your swing meet the ball as it reaches you. Early goes to the leg side, late to the off side.</li>
+              <li><b>Hit it.</b> The bat on screen is where your stick is. The ball is hit when your bat touches it: meet it as it reaches you. Out in front goes to the leg side, beside you to the off side.</li>
               <li><b>Direction.</b> The ball goes the way your bat moves: straight, left, right, or anywhere in between.</li>
               <li><b>Height.</b> Swing <b>up</b> through the ball to hit it in the air, <b>down</b> to keep it along the ground. Lofted shots can be caught!</li>
               <li><b>Six meter.</b> Every six shows how far it went. Beat your longest!</li>

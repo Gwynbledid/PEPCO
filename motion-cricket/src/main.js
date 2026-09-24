@@ -24,14 +24,12 @@ const DEFAULTS = {
   input: 'stick',
   hand: 'R',
   pace: 'slow',
-  latency: TIMING.latency * 1000,
+  batLead: TIMING.lead * 1000,
   quality: 'auto',
   fxVolume: 80,
   ambientVolume: 55,
   chimes: true,
   easyContact: true,
-  autoTiming: true,
-  batView: 'follow',
   showCam: true,
   name: 'YOU',
   number: '18',
@@ -301,7 +299,7 @@ function renderSettings() {
     if (el.type === 'checkbox') el.checked = !!v;
     else if (document.activeElement !== el) el.value = v;
   });
-  $('latencyVal').textContent = `${settings.latency} ms`;
+  $('latencyVal').textContent = `${settings.batLead} ms`;
   $('inputNote').textContent = {
     stick: 'Hold any stick like a bat — a rolled newspaper, a broom handle, a toy bat. The camera finds the stick itself.',
     hands: 'No stick: hold your hands together like a grip. The bat angle is estimated from your fists.',

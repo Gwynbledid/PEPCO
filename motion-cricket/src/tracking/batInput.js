@@ -44,13 +44,17 @@ export class BatInput {
     this.detector = new StrokeDetector(STROKE_PROFILES.stick);
     this.calib = defaultCalibration('stick');
     this.raw = { hands: [], grip: null, tip: null, found: false, conf: 0, predicted: false, scale: 0 };
-    this.state = { tracked: false, conf: 0, t: 0, gx: 0, gy: 0, angle: -Math.PI / 2, ratio: 0.85 };
+    // gx, gy, angle and their rates of change (per second), so the bat can
+    // be drawn where the stick is now, not where the camera last saw it.
+    this.state = { tracked: false, conf: 0, t: 0, gx: 0, gy: 0, angle: -Math.PI / 2, ratio: 0.85, vgx: 0, vgy: 0, vangle: 0 };
     this.handDir = { x: 0, y: 1 };
+    // Light smoothing only: enough to hide jitter when still, next to no lag
+    // when moving.
     this.f = {
-      gx: new OneEuro(1.2, 0.5),
-      gy: new OneEuro(1.2, 0.5),
-      angle: new OneEuro(1.8, 0.35),
-      ratio: new OneEuro(0.8, 0.2),
+      gx: new OneEuro(4, 2.5),
+      gy: new OneEuro(4, 2.5),
+      angle: new OneEuro(4.5, 1.2),
+      ratio: new OneEuro(1.5, 0.3),
     };
     this.lastSeen = -Infinity;
     this.motion = null; // integrated swing position in hand sizes
@@ -141,6 +145,7 @@ export class BatInput {
     const s = this.state;
     const g = mirror(grip);
     const c = this.calib;
+    const prev = { gx: s.gx, gy: s.gy, angle: s.angle, t: s.t, tracked: s.tracked };
     s.gx = this.f.gx.filter((g.x - c.stance.x) / c.rangeX, t);
     s.gy = this.f.gy.filter((c.stance.y - g.y) / c.rangeUp, t);
     if (dir) {
@@ -148,6 +153,7 @@ export class BatInput {
       const a = Math.atan2(-dir.y, -dir.x);
       s.angle = this.f.angle.filter(unwrapTo(a, s.angle), t);
     }
+    this._rates(prev, t, !!dir);
     if (lengthRel && c.stick?.lengthRel) {
       s.ratio = this.f.ratio.filter(Math.min(1.1, lengthRel / c.stick.lengthRel), t);
     }
@@ -158,6 +164,23 @@ export class BatInput {
     // Swing motion, in hand sizes: the stick tip when it's seen, otherwise
     // the hands (a fast swing often blurs the stick for a frame or two).
     this._motion(t, this.mode === 'stick' ? tip : null, grip, scale);
+  }
+
+  /** Rates of change of the bat pose, lightly smoothed. */
+  _rates(prev, t, angleSeen) {
+    const s = this.state;
+    const dt = t - prev.t;
+    if (!prev.tracked || !(dt > 0) || dt > 0.2) {
+      s.vgx = s.vgy = s.vangle = 0;
+      return;
+    }
+    const k = Math.min(1, dt / 0.04);
+    s.vgx += ((s.gx - prev.gx) / dt - s.vgx) * k;
+    s.vgy += ((s.gy - prev.gy) / dt - s.vgy) * k;
+    // A held angle (stick not seen) keeps its last rate, so a swing that
+    // blurs the stick carries on round.
+    if (angleSeen) s.vangle += ((s.angle - prev.angle) / dt - s.vangle) * k;
+    else s.vangle *= 0.6;
   }
 
   _motion(t, tip, grip, scale) {
@@ -220,13 +243,16 @@ export class BatInput {
   processPointer(t) {
     const p = this.pointer || { x: -0.1, y: -0.6 };
     const s = this.state;
+    const prev = { gx: s.gx, gy: s.gy, angle: s.angle, t: s.t, tracked: s.tracked };
     s.gx = p.x * 0.55;
     s.gy = p.y * 0.5 + 0.25;
     s.angle = Math.atan2(p.y + 0.15, p.x - 0.05);
+    s.angle = unwrapTo(s.angle, prev.angle);
     s.ratio = 0.85;
     s.tracked = true;
     s.conf = 1;
     s.t = t;
+    this._rates(prev, t, true);
     // Screen units → pseudo hand sizes (half the screen ≈ 12).
     this.detector.push(t, p.x * 12, p.y * 12);
   }

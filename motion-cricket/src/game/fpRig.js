@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BLADE, aimBat, createBat } from './batModel.js';
+import { BLADE, HANDLE, aimBat, createBat } from './batModel.js';
 import { addRim, toonMaterial } from './characters.js';
 
 // First-person view of the player's own bat, gloves and sleeves, parented to
@@ -132,10 +132,10 @@ export class FirstPersonRig {
     const gx = THREE.MathUtils.clamp(s.gx, -2, 2);
     const gy = THREE.MathUtils.clamp(s.gy, -1.6, 2);
     const target = this._t.a.set(0.1 * this.hand + gx * 0.3, -0.1 + gy * 0.25, -0.82 - Math.max(0, -gy) * 0.05);
-    this.grip.lerp(target, 0.6);
+    this.grip.copy(target);
     const r = THREE.MathUtils.clamp(s.ratio ?? 0.85, 0.15, 1);
     const d = this._t.b.set(Math.cos(s.angle) * r, Math.sin(s.angle) * r, -Math.sqrt(1 - r * r) - 0.5).normalize();
-    this.dir.lerp(d, 0.6).normalize();
+    this.dir.copy(d);
 
     // Around contact, ease the sweet spot towards the ball so they visibly meet.
     let grip = this.grip;
@@ -201,6 +201,18 @@ export class FirstPersonRig {
     }
     pos.needsUpdate = true;
     col.needsUpdate = true;
+  }
+
+  /**
+   * The bat as a line, in camera space: from low on the handle down to the
+   * toe. Call after update().
+   * @returns {{top: THREE.Vector3, toe: THREE.Vector3, shoulder: number}}
+   *   shoulder: where the blade starts, as a fraction from top to toe
+   */
+  line() {
+    const top = new THREE.Vector3(0, HANDLE * 0.5, 0).applyMatrix4(this.bat.matrix);
+    const toe = new THREE.Vector3(0, -BLADE, 0).applyMatrix4(this.bat.matrix);
+    return { top, toe, shoulder: (HANDLE * 0.5) / (HANDLE * 0.5 + BLADE) };
   }
 
   /** Sweet spot of the blade in world space. */

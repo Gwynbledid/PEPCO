@@ -18,7 +18,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export function timingQuality(e) {
   const a = Math.abs(e);
   if (a <= TIMING.perfect) return 1;
-  return 1 - 0.75 * clamp((a - TIMING.perfect) / 0.18, 0, 1);
+  return 1 - 0.75 * clamp((a - TIMING.perfect) / 0.06, 0, 1);
 }
 
 export function timingLabel(e, contact = 'middle') {
@@ -66,7 +66,7 @@ export function shotFromSwing({ vx, vy, fx = 0, fy = 0, peak, ref, e, hand, cont
   }
 
   const side = Math.sign(h) * clamp((Math.abs(h) - 0.3) / 0.7, 0, 1);
-  const lateness = Math.sign(e) * clamp((Math.abs(e) - 0.03) / 0.12, 0, 1.4);
+  const lateness = Math.sign(e) * clamp((Math.abs(e) - TIMING.perfect) / 0.05, 0, 1.4);
   let azimuth = side * 100 + hand * lateness * 45 + (rand() - 0.5) * 6;
   let loft = up > 0.2;
   let elevation = loft ? 20 + 20 * clamp((up - 0.2) / 0.8, 0, 1) + rand() * 4 : -3 + rand() * 2;

@@ -26,14 +26,17 @@ export const PACES = {
   fast: [32, 37], // ~115-135 km/h
 };
 
-// Contact timing (seconds). e = (measured bat peak) - (ball at the bat + latency).
+// Contact timing (seconds). The ball is hit when the bat touches it; e is
+// when that happened compared with the ball reaching the batter
+// (<0 early, out in front; >0 late, beside the batter).
 export const TIMING = {
-  latency: 0.1, // camera + processing + display, default (adjustable in settings)
-  early: 0.5, // a swing peaking earlier than this missed the ball
-  lateWait: 0.3, // how long after the ball reaches the bat a late swing can still start
-  refine: 0.2, // after a provisional hit, how long to keep refining the shot
-  perfect: 0.035,
-  good: 0.08,
+  lead: 0.08, // default camera delay the bat is drawn ahead to make up (settings)
+  // The bat can touch the ball only while it's near the batter (about a
+  // metre and a half either side of the hitting point at slow pace).
+  early: 0.08, // out in front
+  late: 0.04, // and just after it reaches the batter
+  perfect: 0.02,
+  good: 0.045,
 };
 
 export function standHeight(rFromCenter) {
